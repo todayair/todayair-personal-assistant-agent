@@ -25,26 +25,54 @@ MEMORY_DIR = os.getenv("MEMORY_DIR", ".agent_memory")
 MEMORY_COLLECTION = os.getenv("MEMORY_COLLECTION", "agent_memory")
 MEMORY_TOP_K = int(os.getenv("MEMORY_TOP_K", "3"))
 MEMORY_ENABLED = os.getenv("MEMORY_ENABLED", "true").lower() == "true"
+# 嵌入模型：本地已有缓存时完全离线加载，绝不做无谓的联网版本检查
+EMBED_MODEL = os.getenv("EMBED_MODEL", "intfloat/multilingual-e5-small")
+EMBED_DEVICE = os.getenv("EMBED_DEVICE", "cpu")
 # 相似度阈值：低于此值的记忆不注入（余弦距离转相似度后比较）
 MEMORY_MIN_SIMILARITY = float(os.getenv("MEMORY_MIN_SIMILARITY", "0.4"))
 
 
 def _get_chromadb() -> tuple[Any, Any]:
-    """延迟导入 ChromaDB，避免未安装时阻塞启动"""
+    """延迟导入 ChromaDB，避免未安装时阻塞启动
+
+    模型加载策略（本地优先，解决"每次启动都联网重试"）：
+    1. 先用 local_files_only=True 完全离线加载——本地已有缓存则秒开、零网络请求；
+       此前直接构造 embedding function 会触发 sentence-transformers 对
+       huggingface.co 的版本检查（无网络时表现为 WinError 10060 重试 5 次）。
+    2. 仅当本地确无缓存时，才联网下载一次，并打印明确提示。
+    3. 将实例预填进 chromadb 的类级模型缓存，其内部构造时直接复用，
+       避免二次加载再次触发联网检查。
+    """
     import chromadb
     from chromadb.utils import embedding_functions
+    from sentence_transformers import SentenceTransformer
+
+    try:
+        model = SentenceTransformer(
+            EMBED_MODEL, device=EMBED_DEVICE, local_files_only=True
+        )
+    except Exception:
+        print(
+            "检测到本地无嵌入模型缓存，首次使用将联网下载 "
+            f"({EMBED_MODEL}，约 235MB)，仅此一次...",
+            flush=True,
+        )
+        model = SentenceTransformer(EMBED_MODEL, device=EMBED_DEVICE)
+
+    # 预填 chromadb 类级模型缓存：构造 embedding function 时直接复用该实例
+    embedding_functions.SentenceTransformerEmbeddingFunction.models[EMBED_MODEL] = model
+    emb_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+        model_name=EMBED_MODEL, device=EMBED_DEVICE
+    )
 
     client = chromadb.PersistentClient(path=MEMORY_DIR)
-    emb_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name="intfloat/multilingual-e5-small"
-    )
     return client, emb_fn
 
 
 # ── 敏感信息检测 ──────────────────────────────────────────────
 
 SENSITIVE_PATTERNS = [
-    r'\b\d{11}\b',            # 中国大陆手机号
+    r'\b\d{11}\b',            # 手机号
     r'\b\d{16,19}\b',         # 银行卡号
     r'(?:密码|口令|secret|password)\s*[是为:：]\s*\S+',  # 密码
     r'(?:身份证|ID|ssn)\s*[是为:：]?\s*\d{17}[\dXx]',     # 身份证

@@ -14,10 +14,22 @@ build/
 
 # ===== 运行时数据 =====
 .agent_memory/
+# 旧版 JSON 数据目录（仅首次启动一次性迁移到 MySQL 时读取，不再写入）
 .agent_personal/
+.agent_history/
+
+# ===== 运行时日志（勿提交）=====
+ui_stderr.log
+ui_stdout.log
+_dbg_*.log
+*.log
 
 # ===== 临时草稿 / 调试 =====
 scratch/
+
+# ===== 浏览器调试 / 无障碍快照 =====
+ui.yaml
+.playwright-cli/
 
 # ===== IDE / 编辑器 =====
 .idea/
@@ -32,5 +44,10 @@ Thumbs.db
 # ===== 个人笔记（不上传）=====
 注意点.md
 
+# ===== 外部参考文档（非本项目代码）=====
+awesome-design/
+
 # ===== CodeBuddy 项目数据（勿删）=====
 .codebuddy/
+
+gradio_ui.py

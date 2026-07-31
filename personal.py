@@ -1,15 +1,18 @@
 """
-个人效率工具：待办事项、笔记、提醒
+个人效率工具：纯函数与共享数据（供 personal_mysql 复用）
 
-- 待办 / 笔记 / 提醒均以 JSON 持久化到本地目录（默认 .agent_personal/）
-- 提醒支持自然语言时间解析：15:00、明天 9:00、30分钟后、2026-07-31 15:00
-- check_reminders() 由主程序后台循环调用，到点返回已触发的提醒
+本模块为纯函数与共享数据（待办 / 笔记 / 提醒统一存 MySQL，
+见 personal_mysql.py）。这里只保留：
+
+- parse_time / format_time：自然语言时间解析与格式化纯函数
+- format_fired_reminder：提醒通知文本格式化
+- Item / DATA_DIR / load_items：MySQL 后端做旧版 .agent_personal/ 存量
+  数据一次性迁移时复用的类型与读取函数
 """
 
 import json
 import os
 import re
-import time
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -19,7 +22,8 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".agent_pers
 Item = dict[str, Any]
 
 
-def _load(path: str) -> list[Item]:
+def load_items(path: str) -> list[Item]:
+    """读取旧版数据文件（仅供 MySQL 后端一次性迁移使用）"""
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -30,21 +34,14 @@ def _load(path: str) -> list[Item]:
     return []
 
 
-def _save(path: str, data: list[Item]) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-def _next_id(items: list[Item]) -> int:
-    return max((i.get("id", 0) for i in items), default=0) + 1
-
-
 def parse_time(s: str) -> float:
     """解析自然语言时间为时间戳（秒）。
 
     支持的格式：
     - 15:00                    → 今天 15:00（已过则明天）
     - 明天 9:00 / 后天 8:30    → 相对日期 + 时间
+    - 3点 / 3点半 / 下午3点 / 明天9点  → 几点风格（已过则明天）
+    - 3点一刻 / 3点三刻 / 3点1刻       → 刻钟（1刻=15分，四刻自动进位整点）
     - 30秒后 / 30分钟后 / 2小时后 / 3天后
     - 2026-07-31 15:00
     """
@@ -86,8 +83,48 @@ def parse_time(s: str) -> float:
             dt += timedelta(days=1)
         return dt.timestamp()
 
+    # X点 / X点半 / X点N刻（可带 上午/下午/晚上/凌晨/中午 修饰词，可带 今天/明天/后天/大后天 日期词）
+    m = re.match(
+        r"^(今天|明天|后天|大后天)?\s*(凌晨|上午|中午|下午|晚上)?\s*(\d{1,2})点(半|一刻|两刻|二刻|三刻|四刻|[1-4]刻)?$",
+        s,
+    )
+    if m:
+        day_word, mod, h, tail = m.groups()
+        offset = {"今天": 0, "明天": 1, "后天": 2, "大后天": 3}.get(day_word, 0)
+        hour = int(h)
+        if mod in ("下午", "晚上"):
+            hour = hour % 12 + 12  # 下午3点=15点，晚上8点=20点，晚上12点=12点
+        if hour > 23:
+            raise ValueError(f"无法解析时间: {s!r}，小时超出范围")
+        # 刻钟换算：1刻=15分钟，四刻=60分钟（自动进位到下一整点）
+        minute = {
+            "半": 30,
+            "一刻": 15, "两刻": 30, "二刻": 30, "三刻": 45, "四刻": 60,
+            "1刻": 15, "2刻": 30, "3刻": 45, "4刻": 60,
+        }.get(tail, 0)
+        # 从整点基准加分钟，minute=60 时自动进位且跨天也正确
+        base = (now + timedelta(days=offset)).replace(
+            hour=hour, minute=0, second=0, microsecond=0
+        )
+        dt = base + timedelta(minutes=minute)
+        if offset == 0 and dt.timestamp() < now.timestamp():
+            dt += timedelta(days=1)  # 今天已过该点 → 自动推到明天
+        return dt.timestamp()
+
     raise ValueError(
-        f"无法解析时间: {s!r}，请用 '15:00'、'明天 9:00'、'30分钟后'、'2026-07-31 15:00' 等格式"
+        f"无法解析时间: {s!r}，请用 '15:00'、'明天 9:00'、'30分钟后'、'3点'、'下午3点'、'3点一刻'、'2026-07-31 15:00' 等格式"
+    )
+
+
+def format_fired_reminder(r: Item) -> str:
+    """将一条已触发的提醒格式化为多行可读文本（CLI 打印 / UI 展示通用）"""
+    return "\n".join(
+        [
+            f"提醒时间到！[#{r['id']}] {r['text']}",
+            f"  内容：{r['text']}",
+            f"  预定时间：{format_time(r['when'])}",
+            f"  按回车键(Enter)继续",
+        ]
     )
 
 
@@ -102,105 +139,4 @@ def format_time(ts: float) -> str:
     return dt.strftime("%m-%d %H:%M")
 
 
-class PersonalManager:
-    """待办 / 笔记 / 提醒 的统一管理器（JSON 本地持久化）"""
 
-    def __init__(self, data_dir: str = DATA_DIR):
-        os.makedirs(data_dir, exist_ok=True)
-        self.todos_file = os.path.join(data_dir, "todos.json")
-        self.notes_file = os.path.join(data_dir, "notes.json")
-        self.reminders_file = os.path.join(data_dir, "reminders.json")
-        self.todos = _load(self.todos_file)
-        self.notes = _load(self.notes_file)
-        self.reminders = _load(self.reminders_file)
-
-    # ---------- 待办 ----------
-    def add_todo(self, text: str) -> Item:
-        todo = {
-            "id": _next_id(self.todos),
-            "text": text,
-            "done": False,
-            "created_at": time.time(),
-        }
-        self.todos.append(todo)
-        _save(self.todos_file, self.todos)
-        return todo
-
-    def list_todos(self, only_pending: bool = False) -> list[Item]:
-        items = [t for t in self.todos if not t["done"]] if only_pending else self.todos
-        return sorted(items, key=lambda t: (t["done"], -t["created_at"]))
-
-    def complete_todo(self, todo_id: int) -> bool:
-        for t in self.todos:
-            if t["id"] == todo_id:
-                t["done"] = True
-                _save(self.todos_file, self.todos)
-                return True
-        return False
-
-    def delete_todo(self, todo_id: int) -> bool:
-        for i, t in enumerate(self.todos):
-            if t["id"] == todo_id:
-                self.todos.pop(i)
-                _save(self.todos_file, self.todos)
-                return True
-        return False
-
-    # ---------- 笔记 ----------
-    def add_note(self, title: str, content: str) -> Item:
-        note = {
-            "id": _next_id(self.notes),
-            "title": title,
-            "content": content,
-            "created_at": time.time(),
-        }
-        self.notes.append(note)
-        _save(self.notes_file, self.notes)
-        return note
-
-    def list_notes(self) -> list[Item]:
-        return sorted(self.notes, key=lambda n: -n["created_at"])
-
-    def delete_note(self, note_id: int) -> bool:
-        for i, n in enumerate(self.notes):
-            if n["id"] == note_id:
-                self.notes.pop(i)
-                _save(self.notes_file, self.notes)
-                return True
-        return False
-
-    # ---------- 提醒 ----------
-    def add_reminder(self, text: str, when: str) -> Item:
-        ts = parse_time(when)
-        reminder = {
-            "id": _next_id(self.reminders),
-            "text": text,
-            "when": ts,
-            "done": False,
-            "created_at": time.time(),
-        }
-        self.reminders.append(reminder)
-        _save(self.reminders_file, self.reminders)
-        return reminder
-
-    def list_reminders(self, only_pending: bool = False) -> list[Item]:
-        items = [r for r in self.reminders if not r["done"]] if only_pending else self.reminders
-        return sorted(items, key=lambda r: r["when"])
-
-    def delete_reminder(self, reminder_id: int) -> bool:
-        for i, r in enumerate(self.reminders):
-            if r["id"] == reminder_id:
-                self.reminders.pop(i)
-                _save(self.reminders_file, self.reminders)
-                return True
-        return False
-
-    def check_reminders(self) -> list[Item]:
-        """返回所有已到时间且未通知的提醒，并标记为已通知"""
-        now = time.time()
-        fired = [r for r in self.reminders if not r["done"] and r["when"] <= now]
-        if fired:
-            for r in fired:
-                r["done"] = True
-            _save(self.reminders_file, self.reminders)
-        return fired

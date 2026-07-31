@@ -2,6 +2,12 @@ pydantic-ai>=2.20.0
 pydantic-ai-harness>=0.14.0
 python-dotenv>=1.0
 
+# Gradio Web 前端
+gradio>=5.0.0
+
 # 外部记忆系统（向量数据库）
-chromadb>=1.10.0
+chromadb>=1.0.0
 sentence-transformers>=3.0.0
+
+# 个人数据（待办/笔记/提醒 + 历史会话）MySQL 存储（必需）
+pymysql>=1.1.0

@@ -39,7 +39,10 @@ from pydantic_ai_harness.shell import Shell
 
 # 外部记忆系统（ChromaDB 向量数据库）
 from memory import get_memory
-from personal import PersonalManager, format_time
+from personal import format_fired_reminder, format_time
+from personal_mysql import MySQLPersonalManager
+from storage import create_personal_manager, create_session_store
+from history import format_session_row, messages_to_display
 from pydantic_ai_harness.compaction import (
     ClearToolResults,
     SummarizingCompaction,
@@ -69,9 +72,10 @@ PROMPT_CACHING_ENABLED = True
 toolsets = load_mcp_toolsets('mcp_config.json')
 
 # ---------- 创建 Agent ----------
-agent = Agent( # pyright: ignore[reportCallIssue]
+agent = Agent[None](  # pyright: ignore[reportCallIssue]
     model=MODEL,
     system_prompt=SYSTEM_PROMPT,
+    deps_type=type(None),  # 显式匹配泛型参数，消除 reportArgumentType
     model_settings={'max_retries': 2, 'timeout': 60},  # pyright: ignore[reportArgumentType]
     capabilities=[
         WebSearch(local=True),
@@ -95,19 +99,23 @@ agent = Agent( # pyright: ignore[reportCallIssue]
     toolsets=toolsets,
 )
 
-# 个人效率管理（待办/笔记/提醒，JSON 本地持久化）
-personal = PersonalManager()
+# 个人效率管理（待办/笔记/提醒）：统一使用 MySQL 持久化
+# （初始化失败直接报错终止）
+personal = create_personal_manager()
+
+# 提醒调度唤醒事件：新增提醒时 set，让后台调度循环立即按新堆顶重算休眠时间
+wake_event = asyncio.Event()
 
 
 # ---------- 个人效率工具（LLM 可调用） ----------
-@agent.tool  # pyright: ignore[reportArgumentType]
+@agent.tool_plain
 def add_todo(text: str) -> str:
     """添加一条待办事项。例：'买牛奶'、'周三提交报告'"""
     t = personal.add_todo(text)
     return f"已添加待办 #{t['id']}: {t['text']}"
 
 
-@agent.tool  # pyright: ignore[reportArgumentType]
+@agent.tool_plain
 def list_todos(only_pending: bool = False) -> str:
     """查看待办事项列表。only_pending=True 只显示未完成的"""
     items = personal.list_todos(only_pending)
@@ -120,26 +128,26 @@ def list_todos(only_pending: bool = False) -> str:
     return "\n".join(lines)
 
 
-@agent.tool  # pyright: ignore[reportArgumentType]
+@agent.tool_plain
 def complete_todo(todo_id: int) -> str:
     """把待办标记为已完成，参数为待办编号"""
     return "已标记完成" if personal.complete_todo(todo_id) else f"未找到待办 #{todo_id}"
 
 
-@agent.tool  # pyright: ignore[reportArgumentType]
+@agent.tool_plain
 def delete_todo(todo_id: int) -> str:
     """删除一条待办，参数为待办编号"""
     return "已删除" if personal.delete_todo(todo_id) else f"未找到待办 #{todo_id}"
 
 
-@agent.tool  # pyright: ignore[reportArgumentType]
+@agent.tool_plain
 def add_note(title: str, content: str) -> str:
     """保存一条笔记。例：title='会议纪要', content='周一 10 点例会，议题：预算'"""
     n = personal.add_note(title, content)
     return f"已保存笔记 #{n['id']}: {n['title']}"
 
 
-@agent.tool  # pyright: ignore[reportArgumentType]
+@agent.tool_plain
 def list_notes() -> str:
     """查看所有笔记标题和内容"""
     notes = personal.list_notes()
@@ -151,20 +159,33 @@ def list_notes() -> str:
     return "\n".join(lines)
 
 
-@agent.tool  # pyright: ignore[reportArgumentType]
+@agent.tool_plain
 def delete_note(note_id: int) -> str:
     """删除一条笔记，参数为笔记编号"""
     return "已删除" if personal.delete_note(note_id) else f"未找到笔记 #{note_id}"
 
 
-@agent.tool  # pyright: ignore[reportArgumentType]
-def add_reminder(text: str, when: str) -> str:
-    """设置一条提醒。when 支持自然语言：'15:00'、'明天 9:00'、'30分钟后'、'2026-07-31 15:00'。例：text='开会', when='15:00'"""
-    r = personal.add_reminder(text, when)
+@agent.tool_plain
+def add_reminder(text: str = "提醒", when: str = "") -> str:
+    """设置一条提醒。when 支持自然语言：'15:00'、'明天 9:00'、'3点'、'下午3点'、'3点一刻'、'30分钟后'、'2026-07-31 15:00'。例：text='开会', when='15:00'
+    只在缺失必要信息时才询问，其余情况直接调用本工具：
+    - text（内容）：用户没给具体内容（如"提醒我1分钟后"）时，不要停下来询问，直接省略该参数（使用默认内容"提醒"），或按语境用一个简短内容代替。
+    - when（时间）：优先从用户的话里解析（"1分钟后""明天9点""3点一刻"等）。只有当用户完全没给时间、也无法从语境推断（如只说"提醒我"）时，才用一句话询问希望什么时候提醒，等用户给出时间后再调用本工具；绝不猜测或编造时间，也不向用户报错。"""
+    try:
+        r = personal.add_reminder(text, when)
+        wake_event.set()  # 立即唤醒调度循环，新提醒无需等待下一个休眠周期
+    except ValueError as e:
+        # 解析失败 → 返回引导指令，让 LLM 转而询问用户补充时间，而不是直接报错
+        return (
+            f"时间解析失败: {e}。"
+            "请不要直接向用户报告这个错误，而是主动用自然语言询问用户希望设置提醒的具体时间"
+            "（可提示支持 '15:00'、'明天 9:00'、'30分钟后'、'3点一刻'、'2026-07-31 15:00' 等写法），"
+            "等用户给出时间后再重新调用 add_reminder。"
+        )
     return f"已设置提醒 #{r['id']}: {r['text']}（{format_time(r['when'])}）"
 
 
-@agent.tool  # pyright: ignore[reportArgumentType]
+@agent.tool_plain
 def list_reminders() -> str:
     """查看所有未触发的提醒"""
     items = personal.list_reminders(only_pending=True)
@@ -176,7 +197,7 @@ def list_reminders() -> str:
     return "\n".join(lines)
 
 
-@agent.tool  # pyright: ignore[reportArgumentType]
+@agent.tool_plain
 def delete_reminder(reminder_id: int) -> str:
     """删除一条提醒，参数为提醒编号"""
     return "已删除" if personal.delete_reminder(reminder_id) else f"未找到提醒 #{reminder_id}"
@@ -215,13 +236,13 @@ def print_header():
     print("═" * 52)
     print(f"  Pydantic AI 交互式 Agent 对话")
     print(f"  模型: {MODEL}")
-    print(f"  /tools 查看能力 | /memory 记忆 | /todos 待办 | /notes 笔记 | /reminders 提醒 | /forget 清空记忆 | /clear 清空历史 | Ctrl+C 退出")
+    print(f"  输入 /help 查看全部指令与能力 | /exit 退出")
     print("═" * 52)
 
 
 async def main():
-    # 初始化外部记忆系统（首次运行会下载嵌入模型 ~235MB，请耐心等待）
-    print("正在初始化记忆系统（首次使用会下载模型，可能需要 1-2 分钟）...", flush=True)
+    # 初始化外部记忆系统（模型本地优先：已有缓存秒开，仅首次需要联网下载）
+    print("正在初始化记忆系统...", flush=True)
     memory = get_memory()
 
     print_header()
@@ -236,34 +257,110 @@ async def main():
 
     all_messages: list | None = None  # pyright: ignore[reportMissingTypeArgument]
 
-    # 后台提醒检查任务：每秒检查一次，到点打印通知
+    # 历史会话存储：统一使用 MySQL 持久化（每轮对话自动保存，/history 查找、
+    # /load 恢复继续对话；初始化失败直接报错终止）
+    store = create_session_store()
+    current_session_id = store.create_session()
+    print(f"当前会话: {current_session_id}（/history 查看历史，/load <ID> 加载历史会话）", flush=True)
+
+    # 后台提醒调度任务：按最小堆休眠到下一个到期提醒（或 60s 兜底），
+    # 新增提醒通过 wake_event 立即唤醒，避免睡过头
     stop_event = asyncio.Event()
 
     async def reminder_loop():
         while not stop_event.is_set():
+            wait = personal.seconds_until_next()
+            if wait is None:
+                wait = 60.0  # 无提醒时兜底轮询，防事件丢失
+            try:
+                # 等 wake_event 被 set，或休眠到下一提醒到期时间（封顶 60s）
+                await asyncio.wait_for(wake_event.wait(), timeout=min(wait, 60.0))
+            except asyncio.TimeoutError:
+                pass
+            wake_event.clear()
             fired = personal.check_reminders()
             for r in fired:
-                print(f"\n[提醒 #{r['id']}] {r['text']}", flush=True)
-            await asyncio.sleep(1)
+                print()
+                print("═" * 40)
+                print(format_fired_reminder(r))
+                print("═" * 40, flush=True)
 
     # 在 agent 生命周期上下文中运行整个对话，确保 MCP 连接持续可用
     async with agent:
         reminder_task = asyncio.create_task(reminder_loop())
         try:
+            # 退出方式统一为 /exit（exit / quit 亦可）：Ctrl+C 在 Windows 终端中是
+            # 复制快捷键，这里捕获中断信号并忽略，退出不会误触发，复制也不会误退出
             while True:
                 try:
                     user_input = (await asyncio.to_thread(input, "\n你: ")).strip()
-                except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
+                except (EOFError, asyncio.CancelledError):
                     print("退出中.....", flush=True)
                     print("\n[对话已结束]", flush=True)
                     break
+                except KeyboardInterrupt:
+                    print(
+                        "\n[提示] Ctrl+C 不会退出程序（复制文本请先选中再按 Ctrl+C）。"
+                        + "退出请输入 /exit。",
+                        flush=True,
+                    )
+                    continue
 
                 if not user_input:
                     continue
 
+                if user_input.lower() in ("/exit", "/quit", "exit", "quit"):
+                    print("退出中.....", flush=True)
+                    print("\n[对话已结束]", flush=True)
+                    break
+
                 if user_input.lower() == "/clear":
                     all_messages = None
-                    print("\n[对话历史已清空]", flush=True)
+                    current_session_id = store.create_session()
+                    print(f"\n[对话历史已清空，已开始新会话 {current_session_id}]", flush=True)
+                    continue
+
+                if user_input.lower() == "/new":
+                    all_messages = None
+                    current_session_id = store.create_session()
+                    print(f"\n[已开始新会话 {current_session_id}]", flush=True)
+                    continue
+
+                if user_input.lower().startswith("/history"):
+                    parts = user_input.split(maxsplit=1)
+                    kw = parts[1].strip() if len(parts) > 1 else ""
+                    sessions = store.list_sessions(keyword=kw, limit=20)
+                    if not sessions:
+                        suffix = f"（关键词: {kw}）" if kw else ""
+                        print(f"\n没有找到历史会话{suffix}", flush=True)
+                    else:
+                        suffix = f"，关键词: {kw}" if kw else ""
+                        print(f"\n历史会话（共 {len(sessions)} 个{suffix}）:", flush=True)
+                        for s in sessions:
+                            print("  " + format_session_row(s), flush=True)
+                        print("\n用 /load <会话ID> 加载某个会话继续对话", flush=True)
+                    continue
+
+                if user_input.lower().startswith("/load"):
+                    parts = user_input.split(maxsplit=1)
+                    if len(parts) < 2 or not parts[1].strip():
+                        print("\n用法: /load <会话ID>（用 /history 查看）", flush=True)
+                        continue
+                    sid = parts[1].strip()
+                    loaded = store.load_messages(sid)
+                    if loaded is None:
+                        print(f"\n未找到会话 {sid}（用 /history 查看）", flush=True)
+                        continue
+                    meta = store.get_session(sid) or {}
+                    title = meta.get("title") or "(无标题)"
+                    pairs = messages_to_display(loaded)
+                    all_messages = loaded
+                    current_session_id = sid
+                    print(f"\n已加载历史会话 {sid}: {title}（共 {len(pairs)} 轮）", flush=True)
+                    for role, text in pairs[-4:]:
+                        tag = "你" if role == "user" else "AI"
+                        print(f"  {tag}: {text[:120]}", flush=True)
+                    print("\n[已恢复该会话上下文，直接输入即可继续对话]", flush=True)
                     continue
 
                 if user_input.lower() == "/memory":
@@ -296,8 +393,22 @@ async def main():
                     print(personal_summary(personal, "reminders"), flush=True)
                     continue
 
-                if user_input.lower() == "/tools":
-                    print("\n已注册能力：", flush=True)
+                if user_input.lower() in ("/help", "/tools"):
+                    print("\n── 可用指令 ──", flush=True)
+                    print("  /help      查看全部指令与能力", flush=True)
+                    print("  /memory    查看记忆状态与隐私规则", flush=True)
+                    print("  /todos     查看待办列表", flush=True)
+                    print("  /notes     查看笔记列表", flush=True)
+                    print("  /reminders 查看提醒列表", flush=True)
+                    print("  /forget    清空所有长期记忆", flush=True)
+                    print("  /history   查看历史会话（可带关键词）", flush=True)
+                    print("  /load <ID> 加载历史会话继续对话", flush=True)
+                    print("  /new       开始新会话", flush=True)
+                    print("  /clear     清空当前对话", flush=True)
+                    print("  /exit      退出程序（exit / quit 亦可）", flush=True)
+                    print("  Ctrl+C     复制文本（请先选中）；不会退出程序", flush=True)
+                    print("", flush=True)
+                    print("── 已注册能力 ──", flush=True)
                     print("  • WebSearch              — 联网搜索（DuckDuckGo）", flush=True)
                     print("  • FileSystem             — 文件读写、编辑、搜索", flush=True)
                     print("  • Shell                  — 执行系统命令", flush=True)
@@ -312,9 +423,13 @@ async def main():
                         print("      每次对话前自动检索 top-3 相似记忆注入上下文", flush=True)
                     print("      低价值/敏感对话自动过滤，不存记忆", flush=True)
                     print("", flush=True)
-                    print("个人效率 (JSON 本地存储 .agent_personal/):", flush=True)
+                    print("个人效率 (存储: MySQL):", flush=True)
                     print(f"      待办: {len(personal.list_todos())} 条 | 笔记: {len(personal.list_notes())} 条 | 提醒: {len(personal.list_reminders(only_pending=True))} 条", flush=True)
                     print("      命令: /todos /notes /reminders 查看", flush=True)
+                    print("", flush=True)
+                    print("历史会话 (存储: MySQL):", flush=True)
+                    print(f"      会话: {len(store.list_sessions(limit=10000))} 个（每轮对话自动保存）", flush=True)
+                    print("      命令: /history [关键词] /load <ID> 查看与恢复", flush=True)
                     print("", flush=True)
                     print("上下文压缩 (TieredCompaction):", flush=True)
                     print(f"      目标: {SUMMARY_TARGET_TOKENS} tokens", flush=True)
@@ -341,15 +456,18 @@ async def main():
                         all_messages = new_msgs
                     else:
                         all_messages.extend(new_msgs)
+                    # 自动保存当前会话到历史存储，供 /history /load 使用
+                    store.save_messages(current_session_id, all_messages, title_hint=user_input)
                 except Exception as e:
                     print(f"\n[错误] {e}")
                     print("[提示] 请检查 API Key、模型名称和网络连接。")
         finally:
             stop_event.set()
+            wake_event.set()  # 唤醒休眠中的调度循环，使其立即退出
             reminder_task.cancel()
 
 
-def personal_summary(personal: PersonalManager, kind: str) -> str:
+def personal_summary(personal: MySQLPersonalManager, kind: str) -> str:
     """格式化显示个人效率数据（供 /todos /notes /reminders 命令使用）"""
     if kind == "todos":
         items = personal.list_todos()
