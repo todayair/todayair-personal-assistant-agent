@@ -1,0 +1,36 @@
+# ===== 环境变量与密钥（切勿提交）=====
+.env
+.env.*
+!.env.example
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# ===== 运行时数据 =====
+.agent_memory/
+.agent_personal/
+
+# ===== 临时草稿 / 调试 =====
+scratch/
+
+# ===== IDE / 编辑器 =====
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ===== 系统文件 =====
+.DS_Store
+Thumbs.db
+
+# ===== 个人笔记（不上传）=====
+注意点.md
+
+# ===== CodeBuddy 项目数据（勿删）=====
+.codebuddy/
