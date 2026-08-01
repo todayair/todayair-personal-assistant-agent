@@ -423,6 +423,10 @@ async def main():
                     print(personal_summary(personal, "reminders"), flush=True)
                     continue
 
+                if user_input.lower() == "/calendar":
+                    print(calendar_summary(personal), flush=True)
+                    continue
+
                 if user_input.lower() in ("/help", "/tools"):
                     print("\n── 可用指令 ──", flush=True)
                     print("  /help      查看全部指令与能力", flush=True)
@@ -430,19 +434,21 @@ async def main():
                     print("  /todos     查看待办列表", flush=True)
                     print("  /notes     查看笔记列表", flush=True)
                     print("  /reminders 查看提醒列表", flush=True)
+                    print("  /calendar  查看日历日程（待办+提醒按日期分组）", flush=True)
                     print("  /forget    清空所有长期记忆", flush=True)
                     print("  /history   查看历史会话（可带关键词）", flush=True)
                     print("  /load <ID> 加载历史会话继续对话", flush=True)
                     print("  /new       开始新会话", flush=True)
                     print("  /clear     清空当前对话", flush=True)
                     print("  /exit      退出程序（exit / quit 亦可）", flush=True)
-                    print("  Ctrl+C     复制文本（请先选中）；不会退出程序", flush=True)
                     print("", flush=True)
                     print("── 已注册能力 ──", flush=True)
                     print("  • WebSearch              — 联网搜索（DuckDuckGo）", flush=True)
                     print("  • FileSystem             — 文件读写、编辑、搜索", flush=True)
                     print("  • Shell                  — 执行系统命令", flush=True)
                     print("  • Todo/Note/Reminder     — 待办、笔记、提醒（10 个工具）", flush=True)
+                    print("      \"添加待办：周三交报告\" / \"记笔记：…\" / \"提醒我 30 分钟后喝水\"", flush=True)
+                    print("  • 日历 Calendar          — /calendar 查看；带截止时间的待办与提醒自动汇入日历", flush=True)
                     print("", flush=True)
                     print("外部记忆系统 (ChromaDB):", flush=True)
                     print(f"      状态: {'已启用' if memory.enabled else '已关闭'}", flush=True)
@@ -455,7 +461,7 @@ async def main():
                     print("", flush=True)
                     print("个人效率 (存储: MySQL):", flush=True)
                     print(f"      待办: {len(personal.list_todos())} 条 | 笔记: {len(personal.list_notes())} 条 | 提醒: {len(personal.list_reminders(only_pending=True))} 条", flush=True)
-                    print("      命令: /todos /notes /reminders 查看", flush=True)
+                    print("      命令: /todos /notes /reminders /calendar 查看", flush=True)
                     print("", flush=True)
                     print("历史会话 (存储: MySQL):", flush=True)
                     print(f"      会话: {len(store.list_sessions(limit=10000))} 个（每轮对话自动保存）", flush=True)
@@ -477,10 +483,17 @@ async def main():
                     if toolsets:
                         for ts in toolsets:
                             print(f"      └─ {ts}", flush=True)
+                    print("  • 国内邮箱（mail_* 工具，QQ/163/126/Outlook）：", flush=True)
                     if EMAIL_ENABLED:
-                        print("      国内邮箱：已启用（mail_* 工具，收信/发信/回复/管理）", flush=True)
+                        print("      状态: 已启用", flush=True)
+                        print("      收信: \"查看收件箱\" / \"搜索 xxx 的未读邮件\" → mail_search_emails", flush=True)
+                        print("      读信: \"读一下最新那封邮件\" → mail_read_email（附件自动保存到本机）", flush=True)
+                        print("      发信: \"发邮件给 a@b.com，主题…，内容…\" → mail_send_email", flush=True)
+                        print("      回信: \"回复刚才那封邮件：…\" → mail_reply_email", flush=True)
+                        print("      管理: \"标为已读\" / \"移到 xx 文件夹\" / \"删除这封邮件\" → mail_mark_read / mail_move_email / mail_delete_email", flush=True)
+                        print("      其他: \"看有哪些文件夹\" → mail_list_folders", flush=True)
                     else:
-                        print("      国内邮箱：未启用（在 .env 配置 EMAIL_ADDRESS / EMAIL_PASSWORD 授权码）", flush=True)
+                        print("      状态: 未启用（在 .env 配置 EMAIL_ADDRESS / EMAIL_PASSWORD 授权码后重启启用）", flush=True)
                     continue
 
                 print("AI: ", end="", flush=True)
@@ -529,6 +542,65 @@ def personal_summary(personal: MySQLPersonalManager, kind: str) -> str:
             lines.append(f"  #{r['id']} {r['text']}（{format_time(r['when'])}）")
         return "\n".join(lines)
     return ""
+
+
+def calendar_summary(personal: MySQLPersonalManager, days: int = 14) -> str:
+    """按日期分组展示日程（带截止时间的待办 + 待触发提醒），供 /calendar 命令使用"""
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    cutoff = now + timedelta(days=days)
+    weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+
+    buckets: dict[str, list[tuple[float | None, str]]] = {}
+
+    def push(bucket: str, ts: float | None, line: str) -> None:
+        buckets.setdefault(bucket, []).append((ts, line))
+
+    def date_key(ts: float) -> str:
+        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+    for t in personal.list_todos(only_pending=True):
+        due = t.get("due")
+        if due is None:
+            push("未设置日期", None, f"[待办] #{t['id']} {t['text']}")
+            continue
+        ts = float(due)
+        bucket = "已过期" if ts < now.timestamp() else ("更晚" if ts > cutoff.timestamp() else date_key(ts))
+        push(bucket, ts, f"[待办] #{t['id']} {t['text']}（截止 {format_time(ts)}）")
+
+    for r in personal.list_reminders(only_pending=True):
+        ts = float(r["when"])
+        bucket = "已过期" if ts < now.timestamp() else ("更晚" if ts > cutoff.timestamp() else date_key(ts))
+        push(bucket, ts, f"[提醒] #{r['id']} {r['text']}（{format_time(ts)}）")
+
+    if not buckets:
+        return "\n日历: 未来日程为空（可让 AI 添加带截止时间的待办或提醒，如\"周三交报告\"）"
+
+    lines = [f"\n日历（未来 {days} 天，含过期与未设置日期）:"]
+    ordered_keys = [(now + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+    ordered_keys += ["已过期", "更晚", "未设置日期"]
+    for k in ordered_keys:
+        if k not in buckets:
+            continue
+        if k == "已过期":
+            lines.append("  已过期:")
+        elif k == "更晚":
+            lines.append(f"  {days} 天以后:")
+        elif k == "未设置日期":
+            lines.append("  未设置日期:")
+        else:
+            dt = datetime.strptime(k, "%Y-%m-%d")
+            if dt.date() == now.date():
+                label = "今天"
+            elif dt.date() == (now + timedelta(days=1)).date():
+                label = "明天"
+            else:
+                label = f"{dt.month}月{dt.day}日（{weekday_names[dt.weekday()]}）"
+            lines.append(f"  {label} {k}:")
+        for ts, item in sorted(buckets[k], key=lambda x: (x[0] is None, x[0] or 0)):
+            lines.append(f"    {item}")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

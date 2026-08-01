@@ -30,12 +30,19 @@ export default function NotesPage() {
   const [editContent, setEditContent] = useState('')
   const [saving, setSaving] = useState(false)
   const [deletingIds, setDeletingIds] = useState<Set<number>>(new Set())
+  const [error, setError] = useState('')
 
   useEffect(() => {
-    notesApi.getAll().then((data) => {
-      setNotes(data)
-      setLoading(false)
-    })
+    notesApi
+      .getAll()
+      .then((data) => {
+        setNotes(data)
+        setLoading(false)
+      })
+      .catch((e) => {
+        setError(e instanceof Error ? e.message : String(e))
+        setLoading(false)
+      })
   }, [])
 
   const handleSelectNote = (note: Note) => {
@@ -53,55 +60,65 @@ export default function NotesPage() {
   const handleSave = async () => {
     const title = editTitle.trim()
     const content = editContent.trim()
-    if (!title || !content || saving) return
+    if (!title || saving) return
 
     setSaving(true)
-
-    if (selectedNote) {
-      // For mock: re-create with same id — real API would PUT /notes/:id
-      const updated: Note = {
-        ...selectedNote,
-        title,
-        content,
-        updatedAt: new Date().toISOString(),
+    setError('')
+    try {
+      if (selectedNote) {
+        const updated = await notesApi.update(selectedNote.id, { title, content })
+        setNotes((prev) => prev.map((n) => (n.id === selectedNote.id ? updated : n)))
+        setSelectedNote(updated)
+      } else {
+        const newNote = await notesApi.create(title, content)
+        setNotes((prev) => [newNote, ...prev])
+        setSelectedNote(newNote)
       }
-      setNotes((prev) => prev.map((n) => (n.id === selectedNote.id ? updated : n)))
-      setSelectedNote(updated)
-    } else {
-      const newNote = await notesApi.create(title, content)
-      setNotes((prev) => [newNote, ...prev])
-      setSelectedNote(newNote)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
     }
-
-    setSaving(false)
   }
 
   const handleDelete = async (id: number, e: React.MouseEvent) => {
     e.stopPropagation()
     setDeletingIds((s) => new Set(s).add(id))
-    await notesApi.delete(id)
-    setNotes((prev) => prev.filter((n) => n.id !== id))
-    if (selectedNote?.id === id) {
-      setSelectedNote(null)
-      setEditTitle('')
-      setEditContent('')
+    setError('')
+    try {
+      await notesApi.delete(id)
+      setNotes((prev) => prev.filter((n) => n.id !== id))
+      if (selectedNote?.id === id) {
+        setSelectedNote(null)
+        setEditTitle('')
+        setEditContent('')
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setDeletingIds((s) => { const n = new Set(s); n.delete(id); return n })
     }
-    setDeletingIds((s) => { const n = new Set(s); n.delete(id); return n })
   }
 
   const isEditing = editTitle !== (selectedNote?.title ?? '') || editContent !== (selectedNote?.content ?? '')
-  const canSave = editTitle.trim() && editContent.trim()
+  const canSave = !!editTitle.trim()
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div className="page-enter flex h-full flex-col overflow-hidden">
       {/* Header */}
-      <header className="flex h-14 items-center gap-2 border-b border-border bg-card px-5">
+      <header className="flex h-14 items-center gap-2 border-b border-border bg-card/80 px-5 backdrop-blur-sm">
         <StickyNote className="h-4 w-4 text-primary" />
         <h1 className="text-sm font-semibold">笔记</h1>
         <span className="ml-1 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
           {notes.length} 篇
         </span>
       </header>
+
+      {error && (
+        <div className="border-b border-destructive/20 bg-destructive/5 px-5 py-2">
+          <p className="text-xs text-destructive">{error}</p>
+        </div>
+      )}
 
       <div className="flex flex-1 overflow-hidden">
         {/* Left: Editor */}
@@ -123,7 +140,7 @@ export default function NotesPage() {
                 onClick={handleSave}
                 disabled={!canSave || saving}
                 className={cn(
-                  'flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                  'flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-all hover:shadow-sm active:scale-95',
                   isEditing && canSave
                     ? 'bg-primary text-primary-foreground hover:bg-primary/90'
                     : 'bg-muted text-muted-foreground',
@@ -151,8 +168,8 @@ export default function NotesPage() {
           <textarea
             value={editContent}
             onChange={(e) => setEditContent(e.target.value)}
-            placeholder="在此输入笔记内容…&#10;&#10;支持纯文本，使用换行和空格组织结构。"
-            className="flex-1 resize-none bg-background px-5 py-4 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none"
+            placeholder={'在此输入笔记内容…\n\n支持纯文本，使用换行和空格组织结构。'}
+            className="flex-1 resize-none bg-gradient-to-b from-background to-muted/10 px-5 py-4 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none"
           />
 
           {/* Footer */}
@@ -167,26 +184,49 @@ export default function NotesPage() {
         {/* Right: Note cards grid */}
         <div className="flex-1 overflow-y-auto bg-muted/20 px-5 py-5">
           {loading ? (
-            <div className="flex justify-center py-12">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            <div className="grid grid-cols-2 gap-3">
+              {[1, 2, 3].map((i) => (
+                <div
+                  key={i}
+                  className="rounded-xl border border-border bg-card p-4 shadow-sm"
+                >
+                  <div className="flex items-start gap-2">
+                    <div className="skeleton mt-0.5 h-3.5 w-3.5 rounded-sm" />
+                    <div className="skeleton h-3.5 w-2/3 rounded-sm" />
+                  </div>
+                  <div className="skeleton mt-3 h-2.5 w-full rounded-sm" />
+                  <div className="skeleton mt-1.5 h-2.5 w-5/6 rounded-sm" />
+                  <div className="skeleton mt-1.5 h-2.5 w-4/6 rounded-sm" />
+                  <div className="mt-3 flex items-center justify-between">
+                    <div className="skeleton h-2 w-14 rounded-sm" />
+                    <div className="skeleton h-2 w-8 rounded-sm" />
+                  </div>
+                </div>
+              ))}
             </div>
           ) : notes.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
-              <FileText className="h-10 w-10 text-muted-foreground/40" />
+            <div className="fade-in-up flex flex-col items-center justify-center gap-3 py-16 text-center">
+              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-primary/15 to-primary/5">
+                <FileText className="h-7 w-7 text-primary/50" />
+              </div>
               <p className="text-sm text-muted-foreground">暂无笔记，在左侧编辑器创建第一篇吧</p>
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-3">
-              {notes.map((note) => (
-                <NoteCard
-                  key={note.id}
-                  note={note}
-                  isSelected={selectedNote?.id === note.id}
-                  isDeleting={deletingIds.has(note.id)}
-                  onClick={() => handleSelectNote(note)}
-                  onDelete={(e) => handleDelete(note.id, e)}
-                />
-              ))}
+              {notes.map((note, index) => {
+                const staggerClass = `stagger-${Math.min(index + 1, 6)}`
+                return (
+                  <NoteCard
+                    key={note.id}
+                    note={note}
+                    isSelected={selectedNote?.id === note.id}
+                    isDeleting={deletingIds.has(note.id)}
+                    className={cn('fade-in-up', staggerClass)}
+                    onClick={() => handleSelectNote(note)}
+                    onDelete={(e) => handleDelete(note.id, e)}
+                  />
+                )
+              })}
             </div>
           )}
         </div>
@@ -199,12 +239,14 @@ function NoteCard({
   note,
   isSelected,
   isDeleting,
+  className,
   onClick,
   onDelete,
 }: {
   note: Note
   isSelected: boolean
   isDeleting: boolean
+  className?: string
   onClick: () => void
   onDelete: (e: React.MouseEvent) => void
 }) {
@@ -216,15 +258,16 @@ function NoteCard({
     <article
       onClick={onClick}
       className={cn(
-        'group relative cursor-pointer rounded-xl border bg-card p-4 shadow-sm transition-all hover:shadow-md hover:-translate-y-0.5',
-        isSelected ? 'border-primary/60 ring-1 ring-primary/20' : 'border-border hover:border-primary/30',
+        'group relative cursor-pointer rounded-xl border bg-card p-4 shadow-sm transition-all hover:shadow-lg hover:-translate-y-1',
+        isSelected ? 'border-primary/60 ring-2 ring-primary/30' : 'border-border hover:border-primary/30',
+        className,
       )}
     >
       {/* Delete button */}
       <button
         onClick={onDelete}
         disabled={isDeleting}
-        className="absolute right-3 top-3 rounded-md p-1 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-all"
+        className="absolute right-3 top-3 rounded-md p-1 text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive active:scale-90 group-hover:opacity-100"
         aria-label="删除笔记"
       >
         {isDeleting ? (

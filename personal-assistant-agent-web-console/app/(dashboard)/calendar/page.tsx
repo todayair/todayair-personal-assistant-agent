@@ -325,11 +325,11 @@ export default function CalendarPage() {
       dayTodos.filter((t) => !t.completed).length +
       dayReminders.filter((r) => r.status === 'pending').length
     return (
-      <div className="flex h-full flex-col overflow-hidden">
-        <header className="flex h-14 items-center gap-2 border-b border-border bg-card px-5">
+      <div className="flex h-full flex-col overflow-hidden page-enter">
+        <header className="flex h-14 items-center gap-2 border-b border-border bg-card/80 backdrop-blur-sm px-5">
           <button
             onClick={() => setSelected(null)}
-            className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+            className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-all active:scale-95"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
             返回日历
@@ -338,7 +338,7 @@ export default function CalendarPage() {
             <button
               onClick={() => shiftSelected(-1)}
               title="前一天"
-              className="flex h-8 w-8 items-center justify-center rounded-lg border border-border text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-border text-muted-foreground hover:bg-muted hover:text-foreground transition-all active:scale-90"
             >
               <ChevronLeft className="h-4 w-4" />
             </button>
@@ -364,7 +364,7 @@ export default function CalendarPage() {
             <button
               onClick={() => shiftSelected(1)}
               title="后一天"
-              className="flex h-8 w-8 items-center justify-center rounded-lg border border-border text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-border text-muted-foreground hover:bg-muted hover:text-foreground transition-all active:scale-90"
             >
               <ChevronRight className="h-4 w-4" />
             </button>
@@ -385,7 +385,7 @@ export default function CalendarPage() {
         <div className="flex-1 overflow-y-auto px-6 py-5">
           <div className="mx-auto max-w-3xl space-y-6">
             {/* 添加计划 */}
-            <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+            <div className="rounded-xl border border-border bg-card p-4 shadow-sm fade-in-up">
               <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 添加当天计划
               </p>
@@ -407,7 +407,7 @@ export default function CalendarPage() {
                   <button
                     onClick={addTodo}
                     disabled={!todoInput.trim() || busy}
-                    className="flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    className="flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 hover:shadow-sm hover:shadow-primary/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95"
                   >
                     {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
                     待办
@@ -436,7 +436,7 @@ export default function CalendarPage() {
                   <button
                     onClick={addReminder}
                     disabled={!remindInput.trim() || !remindTime || busy}
-                    className="flex items-center gap-1.5 rounded-lg border border-border px-3.5 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    className="flex items-center gap-1.5 rounded-lg border border-border px-3.5 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95"
                   >
                     {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
                     提醒
@@ -468,7 +468,7 @@ export default function CalendarPage() {
                         onClick={() => completeTodo(t.id)}
                         disabled={t.completed}
                         title={t.completed ? '已完成' : '标记完成'}
-                        className="rounded-md p-1 text-emerald-600 hover:bg-emerald-50 disabled:hover:bg-transparent transition-colors"
+                        className="rounded-md p-1 text-emerald-600 hover:bg-emerald-50 disabled:hover:bg-transparent transition-all active:scale-90"
                       >
                         {t.completed ? (
                           <CheckSquare className="h-4 w-4" />
@@ -490,7 +490,7 @@ export default function CalendarPage() {
                       <button
                         onClick={() => deleteTodo(t.id)}
                         title="删除"
-                        className="rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
+                        className="rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-all active:scale-90"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -544,7 +544,7 @@ export default function CalendarPage() {
                       <button
                         onClick={() => deleteReminder(r.id)}
                         title="删除"
-                        className="rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
+                        className="rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-all active:scale-90"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -561,8 +561,8 @@ export default function CalendarPage() {
 
   // ══════════ 月视图（仿真日历卡片） ══════════
   return (
-    <div className="flex h-full flex-col overflow-hidden">
-      <header className="flex h-14 items-center gap-3 border-b border-border bg-card px-5">
+    <div className="flex h-full flex-col overflow-hidden page-enter">
+      <header className="flex h-14 items-center gap-3 border-b border-border bg-card/80 backdrop-blur-sm px-5">
         <CalendarDays className="h-4 w-4 text-primary" />
         <h1 className="text-sm font-semibold">日历</h1>
         <span className="hidden rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary sm:inline">
@@ -571,7 +571,7 @@ export default function CalendarPage() {
         <div className="ml-auto">
           <button
             onClick={goToday}
-            className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+            className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-all active:scale-95"
           >
             今天
           </button>
@@ -583,14 +583,14 @@ export default function CalendarPage() {
       <div className="flex-1 overflow-y-auto px-6 py-6">
         <div className="mx-auto max-w-4xl">
           {/* 仿真日历卡片 */}
-          <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
+          <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm fade-in-up">
             {/* 卡片头部：年月标题（点击选择日期翻页） */}
-            <div className="flex items-center justify-between border-b border-border bg-gradient-to-b from-primary/5 to-transparent px-6 py-4">
+            <div className="flex items-center justify-between border-b border-border bg-gradient-to-br from-primary/8 to-transparent px-6 py-4">
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={() => shiftMonth(-1)}
                   title="上个月"
-                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-border text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-border text-muted-foreground hover:bg-muted hover:text-foreground transition-all active:scale-90"
                 >
                   <ChevronLeft className="h-4 w-4" />
                 </button>
@@ -604,7 +604,7 @@ export default function CalendarPage() {
                 <button
                   onClick={() => shiftMonth(1)}
                   title="下个月"
-                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-border text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-border text-muted-foreground hover:bg-muted hover:text-foreground transition-all active:scale-90"
                 >
                   <ChevronRight className="h-4 w-4" />
                 </button>
@@ -654,7 +654,7 @@ export default function CalendarPage() {
                         onClick={() => pickDate(cell.key)}
                         title={cell.inMonth ? '查看当天计划' : '翻到该月并查看当天计划'}
                         className={cn(
-                          'group relative flex min-h-24 flex-col items-center gap-1 p-2 transition-colors hover:bg-primary/5',
+                          'group relative flex min-h-24 flex-col items-center gap-1 p-2 transition-all hover:bg-primary/5 active:scale-95',
                           isLastCol ? 'border-r-0' : 'border-r',
                           isLastRow ? 'border-b-0' : 'border-b',
                           'border-border',
@@ -664,13 +664,13 @@ export default function CalendarPage() {
                         {/* 日期号 */}
                         <span
                           className={cn(
-                            'flex h-9 w-9 items-center justify-center rounded-full text-lg font-medium transition-colors',
+                            'flex h-9 w-9 items-center justify-center rounded-full text-lg font-medium transition-all',
                             isToday
-                              ? 'bg-red-500 font-bold text-white shadow-sm'
+                              ? 'bg-gradient-to-br from-red-500 to-red-600 font-bold text-white shadow-sm shadow-red-500/30'
                               : isWeekend && cell.inMonth
                                 ? 'font-medium text-red-500'
                                 : cell.inMonth
-                                  ? 'text-foreground'
+                                  ? 'text-foreground group-hover:scale-110'
                                   : 'text-muted-foreground/60',
                           )}
                         >
@@ -749,7 +749,7 @@ export default function CalendarPage() {
       {showMonthPicker && (
         <div className="fixed inset-0 z-30 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/40" onClick={() => setShowMonthPicker(false)} />
-          <div className="relative w-80 rounded-2xl border border-border bg-card p-5 shadow-xl">
+          <div className="relative w-80 rounded-2xl border border-border bg-card p-5 shadow-xl fade-in-up">
             <div className="flex items-center justify-between">
               <button
                 onClick={() => setMonth(new Date(month.getFullYear() - 1, month.getMonth(), 1))}

@@ -51,54 +51,83 @@ export default function RemindersPage() {
   const [fireAt, setFireAt] = useState(localDatetimeDefault())
   const [adding, setAdding] = useState(false)
   const [deletingIds, setDeletingIds] = useState<Set<number>>(new Set())
+  const [error, setError] = useState('')
 
   useEffect(() => {
-    remindersApi.getAll().then((data) => {
-      setReminders(data)
-      setLoading(false)
-    })
+    remindersApi
+      .getAll()
+      .then((data) => {
+        setReminders(data)
+        setLoading(false)
+      })
+      .catch((e) => {
+        setError(e instanceof Error ? e.message : String(e))
+        setLoading(false)
+      })
   }, [])
 
   const handleAdd = async () => {
     const trimText = text.trim()
     if (!trimText || !fireAt || adding) return
     setAdding(true)
-    const iso = new Date(fireAt).toISOString()
-    const newReminder = await remindersApi.create(trimText, iso)
-    setReminders((prev) => [newReminder, ...prev])
-    setText('')
-    setFireAt(localDatetimeDefault())
-    setAdding(false)
+    setError('')
+    try {
+      const iso = new Date(fireAt).toISOString()
+      const newReminder = await remindersApi.create(trimText, iso)
+      setReminders((prev) =>
+        [newReminder, ...prev].sort(
+          (a, b) => new Date(a.fireAt).getTime() - new Date(b.fireAt).getTime(),
+        ),
+      )
+      setText('')
+      setFireAt(localDatetimeDefault())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setAdding(false)
+    }
   }
 
   const handleDelete = async (id: number) => {
     setDeletingIds((s) => new Set(s).add(id))
-    await remindersApi.delete(id)
-    setReminders((prev) => prev.filter((r) => r.id !== id))
-    setDeletingIds((s) => { const n = new Set(s); n.delete(id); return n })
+    setError('')
+    try {
+      await remindersApi.delete(id)
+      setReminders((prev) => prev.filter((r) => r.id !== id))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDeletingIds((s) => { const n = new Set(s); n.delete(id); return n })
+    }
   }
 
   const pending = reminders.filter((r) => r.status === 'pending')
   const fired = reminders.filter((r) => r.status === 'fired')
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div className="page-enter flex h-full flex-col overflow-hidden">
       {/* Header */}
-      <header className="flex h-14 items-center gap-2 border-b border-border bg-card px-5">
+      <header className="flex h-14 items-center gap-2 border-b border-border bg-card/80 backdrop-blur-sm px-5">
         <Bell className="h-4 w-4 text-primary" />
         <h1 className="text-sm font-semibold">提醒</h1>
         {pending.length > 0 && (
-          <span className="ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+          <span className="pulse-soft ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">
             {pending.length} 待触发
           </span>
         )}
       </header>
 
+      {error && (
+        <div className="border-b border-destructive/20 bg-destructive/5 px-5 py-2">
+          <p className="text-xs text-destructive">{error}</p>
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto px-6 py-5">
         <div className="mx-auto max-w-2xl space-y-6">
 
           {/* Add form banner */}
-          <div className="rounded-xl border border-border bg-card p-5 shadow-sm">
+          <div className="fade-in-up rounded-xl border border-border bg-card p-5 shadow-sm">
             <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-foreground">
               <AlarmClock className="h-4 w-4 text-primary" />
               新建提醒
@@ -139,7 +168,7 @@ export default function RemindersPage() {
                   <button
                     onClick={handleAdd}
                     disabled={!text.trim() || !fireAt || adding}
-                    className="flex items-center gap-1.5 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    className="flex items-center gap-1.5 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 hover:shadow-sm hover:shadow-primary/20 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                   >
                     {adding ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
@@ -154,8 +183,29 @@ export default function RemindersPage() {
           </div>
 
           {loading ? (
-            <div className="flex justify-center py-10">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            <div className="space-y-0">
+              <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                加载中…
+              </h2>
+              <div className="relative space-y-0">
+                <div className="absolute left-5 top-0 bottom-0 w-px bg-border" />
+                {[0, 1, 2].map((i) => (
+                  <div
+                    key={i}
+                    className="group relative flex items-start gap-4 pb-5 pl-10"
+                  >
+                    <div className="absolute left-3.5 top-1 flex h-3 w-3 items-center justify-center rounded-full border-2 border-primary bg-background" />
+                    <div className="flex-1 rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
+                      <div className="skeleton h-4 w-2/3 rounded" />
+                      <div className="mt-2 flex gap-3">
+                        <div className="skeleton h-5 w-16 rounded-full" />
+                        <div className="skeleton h-4 w-24 rounded" />
+                        <div className="skeleton h-4 w-12 rounded" />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           ) : (
             <>
@@ -168,13 +218,20 @@ export default function RemindersPage() {
                   <div className="relative space-y-0">
                     {/* Timeline line */}
                     <div className="absolute left-5 top-0 bottom-0 w-px bg-border" />
-                    {pending.map((r) => (
-                      <ReminderItem
+                    {pending.map((r, i) => (
+                      <div
                         key={r.id}
-                        reminder={r}
-                        deleting={deletingIds.has(r.id)}
-                        onDelete={() => handleDelete(r.id)}
-                      />
+                        className={cn(
+                          'fade-in-up',
+                          i < 6 ? `stagger-${i + 1}` : 'stagger-6',
+                        )}
+                      >
+                        <ReminderItem
+                          reminder={r}
+                          deleting={deletingIds.has(r.id)}
+                          onDelete={() => handleDelete(r.id)}
+                        />
+                      </div>
                     ))}
                   </div>
                 </section>
@@ -188,21 +245,30 @@ export default function RemindersPage() {
                   </h2>
                   <div className="relative space-y-0 opacity-60">
                     <div className="absolute left-5 top-0 bottom-0 w-px bg-border" />
-                    {fired.map((r) => (
-                      <ReminderItem
+                    {fired.map((r, i) => (
+                      <div
                         key={r.id}
-                        reminder={r}
-                        deleting={deletingIds.has(r.id)}
-                        onDelete={() => handleDelete(r.id)}
-                      />
+                        className={cn(
+                          'fade-in-up',
+                          i < 6 ? `stagger-${i + 1}` : 'stagger-6',
+                        )}
+                      >
+                        <ReminderItem
+                          reminder={r}
+                          deleting={deletingIds.has(r.id)}
+                          onDelete={() => handleDelete(r.id)}
+                        />
+                      </div>
                     ))}
                   </div>
                 </section>
               )}
 
               {reminders.length === 0 && (
-                <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
-                  <BellRing className="h-10 w-10 text-muted-foreground/40" />
+                <div className="fade-in-up flex flex-col items-center justify-center gap-3 py-16 text-center">
+                  <div className="flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-primary/10 to-primary/5">
+                    <BellRing className="h-8 w-8 text-primary/50" />
+                  </div>
                   <p className="text-sm text-muted-foreground">暂无提醒，在上方创建第一个吧</p>
                 </div>
               )}
@@ -230,9 +296,9 @@ function ReminderItem({
       {/* Timeline dot */}
       <div
         className={cn(
-          'absolute left-3.5 top-1 flex h-3 w-3 items-center justify-center rounded-full border-2',
+          'absolute left-3.5 top-1 flex h-3 w-3 items-center justify-center rounded-full border-2 transition-all',
           isPending
-            ? 'border-primary bg-background'
+            ? 'pulse-soft border-primary bg-background'
             : 'border-emerald-500 bg-emerald-500',
         )}
       >
@@ -242,7 +308,7 @@ function ReminderItem({
       {/* Card */}
       <div
         className={cn(
-          'flex-1 rounded-xl border bg-card px-4 py-3 shadow-sm',
+          'flex-1 rounded-xl border bg-card px-4 py-3 shadow-sm transition-all hover:shadow-md',
           isPending ? 'border-border' : 'border-border/50',
         )}
       >
@@ -261,7 +327,7 @@ function ReminderItem({
                 className={cn(
                   'inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-medium',
                   isPending
-                    ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                    ? 'pulse-soft bg-amber-50 text-amber-700 border border-amber-200'
                     : 'bg-emerald-50 text-emerald-700 border border-emerald-200',
                 )}
               >
@@ -285,7 +351,7 @@ function ReminderItem({
           <button
             onClick={onDelete}
             disabled={deleting}
-            className="shrink-0 rounded-md p-1.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-all disabled:opacity-50"
+            className="shrink-0 rounded-md p-1.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive active:scale-90 transition-all disabled:opacity-50"
             aria-label="删除提醒"
           >
             {deleting ? (

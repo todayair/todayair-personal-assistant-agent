@@ -7,6 +7,10 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
 .venv/
 venv/
 dist/
@@ -26,10 +30,12 @@ _dbg_*.log
 
 # 统一日志目录（全部忽略）
 logs/
-scripts/
 
 # ===== 临时草稿 / 调试 =====
 scratch/
+
+# ===== GAIA 评测报告（生成产物）=====
+gaia_eval/results/
 
 # ===== 浏览器调试 / 无障碍快照 =====
 ui.yaml
@@ -54,7 +60,10 @@ awesome-design/
 # ===== CodeBuddy 项目数据（勿删）=====
 .codebuddy/
 
-gradio_ui.py
+# ===== 项目级 Agent 技能（不跟踪）=====
+.agents/
+skills-lock.json
+
 
 # ===== Web 前端（personal-assistant-agent-web-console）=====
 personal-assistant-agent-web-console/node_modules/

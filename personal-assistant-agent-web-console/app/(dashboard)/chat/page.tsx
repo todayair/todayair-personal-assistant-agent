@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { useSearchParams } from 'next/navigation'
 import {
   Plus,
   Send,
@@ -12,6 +13,8 @@ import {
   MessageSquare,
   Sparkles,
   CheckCircle2,
+  CheckSquare2,
+  ArrowRight,
 } from 'lucide-react'
 import { chatApi, type ChatMessage, type ChatSession } from '@/services/api'
 import { cn } from '@/lib/utils'
@@ -33,10 +36,10 @@ function MessageBubble({ msg }: { msg: ChatMessage & { streaming?: boolean; tool
   if (msg.role === 'tool') {
     const done = msg.toolDone
     return (
-      <div className="flex justify-center py-1">
+      <div className="flex justify-center py-1 fade-in-up">
         <div
           className={cn(
-            'flex items-center gap-2 rounded-full px-3 py-1 text-xs',
+            'flex items-center gap-2 rounded-full px-3 py-1 text-xs transition-colors',
             done ? 'bg-muted/40 text-muted-foreground/70' : 'bg-muted/60 text-muted-foreground',
           )}
         >
@@ -55,24 +58,32 @@ function MessageBubble({ msg }: { msg: ChatMessage & { streaming?: boolean; tool
   const isUser = msg.role === 'user'
 
   return (
-    <div className={cn('flex gap-3', isUser ? 'flex-row-reverse' : 'flex-row')}>
-      {/* Avatar */}
-      <div
-        className={cn(
-          'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white',
-          isUser ? 'bg-primary' : 'bg-slate-700',
-        )}
-      >
-        {isUser ? <User className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5" />}
-      </div>
-
-      {/* Bubble */}
-      <div className={cn('flex max-w-[72%] flex-col space-y-1', isUser ? 'items-end' : 'items-start')}>
+    <div
+      className={cn(
+        'flex w-full gap-3 fade-in-up',
+        isUser ? 'justify-end' : 'justify-start',
+      )}
+    >
+      <div className={cn('flex max-w-[75%] gap-3', isUser ? 'flex-row-reverse' : 'flex-row')}>
+        {/* Avatar */}
         <div
           className={cn(
-            'w-fit rounded-2xl px-4 py-2.5 text-sm leading-relaxed',
+            'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white shadow-sm',
             isUser
-              ? 'rounded-tr-sm bg-primary text-primary-foreground'
+              ? 'bg-gradient-to-br from-primary to-primary/80'
+              : 'bg-gradient-to-br from-slate-600 to-slate-700',
+          )}
+        >
+          {isUser ? <User className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5" />}
+        </div>
+
+        {/* Bubble */}
+        <div className={cn('flex min-w-0 flex-1 flex-col space-y-1', isUser ? 'items-end' : 'items-start')}>
+        <div
+          className={cn(
+            'w-fit rounded-2xl px-4 py-2.5 text-sm leading-relaxed transition-shadow',
+            isUser
+              ? 'rounded-tr-sm bg-primary text-primary-foreground shadow-sm shadow-primary/20'
               : 'rounded-tl-sm bg-card text-foreground border border-border shadow-sm',
           )}
         >
@@ -88,34 +99,40 @@ function MessageBubble({ msg }: { msg: ChatMessage & { streaming?: boolean; tool
         <p className={cn('text-[10px] text-muted-foreground', isUser ? 'text-right' : 'text-left')}>
           {formatTime(msg.timestamp)}
         </p>
+        </div>
       </div>
     </div>
   )
 }
 
-const RECOMMENDED_HINTS = ['帮我整理今日待办', '搜索 Next.js 最新文档', '查看 GitHub PR 状态']
+const RECOMMENDED_HINTS = [
+  { text: '帮我整理今日待办', icon: CheckSquare2 },
+  { text: '搜索 Next.js 最新文档', icon: Sparkles },
+  { text: '查看 GitHub PR 状态', icon: ArrowRight },
+]
 
 function EmptyState({ onSendHint }: { onSendHint: (hint: string) => void }) {
   return (
-    <div className="mx-auto flex h-full w-full max-w-3xl flex-col items-center justify-center gap-4 text-center">
-      <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
+    <div className="mx-auto flex h-full w-full max-w-3xl flex-col items-center justify-center gap-6 text-center">
+      <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/15 to-primary/5 ring-1 ring-primary/10 fade-in-up">
         <Sparkles className="h-8 w-8 text-primary" />
       </div>
-      <div>
-        <h3 className="text-base font-semibold text-foreground">开始一段新对话</h3>
-        <p className="mt-1 text-sm text-muted-foreground">
+      <div className="fade-in-up stagger-1">
+        <h3 className="text-lg font-semibold text-foreground">开始一段新对话</h3>
+        <p className="mt-1.5 text-sm text-muted-foreground">
           发送消息与 AI 助手交流，支持网页搜索、文件操作、代码执行等工具
         </p>
       </div>
-      <div className="flex flex-wrap justify-center gap-2">
-        {RECOMMENDED_HINTS.map((hint) => (
+      <div className="flex flex-wrap justify-center gap-2 fade-in-up stagger-2">
+        {RECOMMENDED_HINTS.map(({ text, icon: Icon }) => (
           <button
-            key={hint}
+            key={text}
             type="button"
-            onClick={() => onSendHint(hint)}
-            className="rounded-full border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground cursor-pointer hover:border-primary/40 hover:text-primary hover:bg-primary/5 transition-colors"
+            onClick={() => onSendHint(text)}
+            className="group flex items-center gap-2 rounded-full border border-border bg-card px-3.5 py-2 text-xs text-muted-foreground cursor-pointer hover:border-primary/40 hover:text-primary hover:bg-primary/5 hover:shadow-sm transition-all"
           >
-            {hint}
+            <Icon className="h-3 w-3 transition-transform group-hover:scale-110" />
+            {text}
           </button>
         ))}
       </div>
@@ -132,6 +149,7 @@ export default function ChatPage() {
   const [input, setInput] = useState('')
   const [isSending, setIsSending] = useState(false)
   const [showSessionPicker, setShowSessionPicker] = useState(false)
+  const [chatError, setChatError] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const pickerRef = useRef<HTMLDivElement>(null)
@@ -141,9 +159,34 @@ export default function ChatPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [])
 
+  const searchParams = useSearchParams()
+
   useEffect(() => {
-    chatApi.getSessions().then((s) => setSessions(s))
-  }, [])
+    chatApi
+      .getSessions()
+      .then((s) => {
+        setSessions(s)
+        const sid = searchParams.get('session')
+        if (sid) {
+          const found = s.find((x) => x.id === sid)
+          if (found) {
+            chatApi.getSession(found.id).then((full) => {
+              if (full) {
+                setCurrentSession(full)
+                setMessages(
+                  (full.messages ?? []).map((m) =>
+                    m.role === 'tool' ? { ...m, toolDone: true } : m,
+                  ),
+                )
+              }
+            })
+          } else {
+            setChatError('未找到该会话，可能已被删除')
+          }
+        }
+      })
+      .catch(() => setChatError('加载会话列表失败，请确认后端服务已启动'))
+  }, [searchParams])
 
   useEffect(() => {
     scrollToBottom()
@@ -223,6 +266,7 @@ export default function ChatPage() {
     setMessages((prev) => [...prev, streamingMsg])
 
     let builtContent = ''
+    setChatError('')
     try {
       await chatApi.sendMessage(
         session.id,
@@ -265,6 +309,8 @@ export default function ChatPage() {
           })
         },
       )
+    } catch (e) {
+      setChatError(e instanceof Error ? e.message : String(e))
     } finally {
       // 兜底：回复结束后，无论是否收到 toolResult，所有工具消息都标记为完成
       setMessages((prev) =>
@@ -287,9 +333,9 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div className="flex h-full flex-col overflow-hidden page-enter">
       {/* Header */}
-      <header className="flex h-14 items-center justify-between border-b border-border bg-card px-5">
+      <header className="flex h-14 items-center justify-between border-b border-border bg-card/80 backdrop-blur-sm px-5">
         <div className="flex items-center gap-2">
           <MessageSquare className="h-4 w-4 text-primary" />
           <h1 className="text-sm font-semibold text-foreground">
@@ -307,14 +353,14 @@ export default function ChatPage() {
           <div className="relative" ref={pickerRef}>
             <button
               onClick={() => setShowSessionPicker((v) => !v)}
-              className="flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground hover:border-primary/50 hover:text-foreground transition-colors"
+              className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground hover:border-primary/50 hover:text-foreground transition-all"
             >
               <span>{currentSession ? '切换会话' : '选择会话'}</span>
-              <ChevronDown className="h-3 w-3" />
+              <ChevronDown className={cn('h-3 w-3 transition-transform', showSessionPicker && 'rotate-180')} />
             </button>
 
             {showSessionPicker && (
-              <div className="absolute right-0 top-full z-50 mt-1 w-72 rounded-lg border border-border bg-card shadow-lg">
+              <div className="absolute right-0 top-full z-50 mt-1 w-72 rounded-xl border border-border bg-card shadow-lg fade-in-up">
                 <div className="border-b border-border px-3 py-2">
                   <p className="text-xs font-medium text-muted-foreground">历史会话</p>
                 </div>
@@ -343,7 +389,7 @@ export default function ChatPage() {
           {/* New session */}
           <button
             onClick={handleNewSession}
-            className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 hover:shadow-sm hover:shadow-primary/20 transition-all"
           >
             <Plus className="h-3.5 w-3.5" />
             新对话
@@ -365,9 +411,15 @@ export default function ChatPage() {
         )}
       </div>
 
+      {chatError && (
+        <div className="border-t border-destructive/20 bg-destructive/5 px-6 py-2">
+          <p className="text-xs text-destructive">{chatError}</p>
+        </div>
+      )}
+
       {/* Input area */}
-      <div className="border-t border-border bg-card px-6 py-4">
-        <div className="flex items-end gap-3 rounded-xl border border-border bg-background px-4 py-3 shadow-sm focus-within:border-primary/60 focus-within:ring-1 focus-within:ring-primary/20 transition-all">
+      <div className="border-t border-border bg-card/80 backdrop-blur-sm px-6 py-4">
+        <div className="mx-auto flex max-w-3xl items-end gap-3 rounded-2xl border border-border bg-background px-4 py-3 shadow-sm focus-within:border-primary/50 focus-within:shadow-md focus-within:shadow-primary/5 transition-all">
           <div className="flex min-h-8 flex-1 items-center">
             <textarea
               ref={textareaRef}
@@ -382,9 +434,9 @@ export default function ChatPage() {
             />
           </div>
           <button
-            onClick={handleSend}
+            onClick={() => handleSend()}
             disabled={!input.trim() || isSending}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-all hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-all hover:bg-primary/90 hover:scale-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100"
             aria-label="发送消息"
           >
             {isSending ? (

@@ -267,6 +267,23 @@ class MySQLPersonalManager:
     def delete_note(self, note_id: int) -> bool:
         return self._execute("DELETE FROM notes WHERE id = %s", (note_id,)) > 0
 
+    def update_note(self, note_id: int, title: str | None = None, content: str | None = None) -> bool:
+        """更新笔记标题或内容（仅更新提供的字段），返回是否找到该笔记"""
+        sets: list[str] = []
+        args: list[object] = []
+        if title is not None:
+            sets.append("title = %s")
+            args.append(title)
+        if content is not None:
+            sets.append("content = %s")
+            args.append(content)
+        if not sets:
+            return False
+        args.append(note_id)
+        return self._execute(
+            "UPDATE notes SET " + ", ".join(sets) + " WHERE id = %s", tuple(args)
+        ) > 0
+
     # ---------- 提醒 ----------
     def add_reminder(self, text: str, when: str) -> Item:
         ts = parse_time(when)

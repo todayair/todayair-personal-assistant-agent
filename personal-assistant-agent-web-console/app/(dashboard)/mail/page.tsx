@@ -164,7 +164,7 @@ function MailSetupForm({
         <button
           onClick={handleSave}
           disabled={!address.trim() || !password.trim() || saving}
-          className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 hover:shadow-sm hover:shadow-primary/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95"
         >
           {saving ? (
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -463,9 +463,9 @@ export default function MailPage() {
   const isComposing = view === 'compose' || view === 'reply'
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div className="flex h-full flex-col overflow-hidden page-enter">
       {/* Header */}
-      <header className="flex h-14 items-center gap-3 border-b border-border bg-card px-5">
+      <header className="flex h-14 items-center gap-3 border-b border-border bg-card/80 backdrop-blur-sm px-5">
         <Mail className="h-4 w-4 text-primary" />
         <h1 className="text-sm font-semibold">邮箱</h1>
         {status?.enabled && (
@@ -497,7 +497,7 @@ export default function MailPage() {
             onClick={doSearch}
             disabled={searching || !status?.enabled}
             title="搜索"
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-border text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 transition-colors"
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-border text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 transition-all active:scale-90"
           >
             {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4 sm:hidden" />}
             <Search className="hidden h-4 w-4 sm:block" />
@@ -506,7 +506,7 @@ export default function MailPage() {
             onClick={() => loadMessages(currentFolder, keyword.trim())}
             disabled={searching || !status?.enabled}
             title="刷新"
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-border text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 transition-colors"
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-border text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 transition-all active:scale-90"
           >
             <RefreshCw className={cn('h-4 w-4', searching && 'animate-spin')} />
           </button>
@@ -516,7 +516,7 @@ export default function MailPage() {
                 onClick={() => setSwitching(true)}
                 disabled={busy}
                 title="切换邮箱账户"
-                className="flex h-8 items-center gap-1.5 rounded-lg border border-border px-2.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 transition-colors"
+                className="flex h-8 items-center gap-1.5 rounded-lg border border-border px-2.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 transition-all active:scale-95"
               >
                 <Settings2 className="h-3.5 w-3.5" />
                 <span className="hidden sm:inline">切换邮箱</span>
@@ -525,7 +525,7 @@ export default function MailPage() {
                 onClick={handleLogout}
                 disabled={busy}
                 title="退出邮箱（清除本地配置）"
-                className="flex h-8 items-center gap-1.5 rounded-lg border border-red-200 px-2.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-40 transition-colors"
+                className="flex h-8 items-center gap-1.5 rounded-lg border border-red-200 px-2.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-40 transition-all active:scale-95"
               >
                 <LogOut className="h-3.5 w-3.5" />
                 <span className="hidden sm:inline">退出邮箱</span>
@@ -535,7 +535,7 @@ export default function MailPage() {
           <button
             onClick={startCompose}
             disabled={!status?.enabled}
-            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 hover:shadow-sm hover:shadow-primary/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95"
           >
             <SquarePen className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">写邮件</span>
@@ -561,7 +561,7 @@ export default function MailPage() {
       )}
 
       {switching && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center overflow-y-auto bg-background/70 p-6 backdrop-blur-sm">
+        <div className="absolute inset-0 z-20 flex items-center justify-center overflow-y-auto bg-background/70 p-6 backdrop-blur-sm fade-in-up">
           <div className="w-full max-w-md rounded-xl border border-border bg-card p-8 shadow-xl">
             <MailSetupForm
               status={status}
@@ -587,7 +587,7 @@ export default function MailPage() {
         ) : (
           <>
             {/* Folder sidebar */}
-            <div className="hidden w-44 flex-col overflow-y-auto border-r border-border bg-card/50 py-2 md:flex">
+            <div className="hidden w-44 flex-col overflow-y-auto border-r border-border bg-card/50 py-2 md:flex fade-in-up">
               <p className="px-4 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                 文件夹
               </p>
@@ -613,7 +613,7 @@ export default function MailPage() {
             </div>
 
             {/* Message list */}
-            <div className="hidden w-80 flex-col border-r border-border bg-card/30 md:flex">
+            <div className="hidden w-80 flex-col border-r border-border bg-card/30 md:flex fade-in-up stagger-1">
               {loading ? (
                 <div className="flex flex-1 items-center justify-center">
                   <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -674,7 +674,7 @@ export default function MailPage() {
             </div>
 
             {/* Detail / compose pane */}
-            <div className="relative flex min-w-0 flex-1 flex-col bg-background">
+            <div className="relative flex min-w-0 flex-1 flex-col bg-background fade-in-up stagger-2">
               {selectedItem && (
                 <button
                   onClick={() => {
@@ -754,7 +754,7 @@ export default function MailPage() {
                     <button
                       onClick={handleSend}
                       disabled={!composeTo.trim() || busy}
-                      className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 hover:shadow-sm hover:shadow-primary/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95"
                     >
                       {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                       发送
@@ -765,7 +765,7 @@ export default function MailPage() {
                         setError('')
                       }}
                       disabled={busy}
-                      className="rounded-lg border border-border px-4 py-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 transition-colors"
+                      className="rounded-lg border border-border px-4 py-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 transition-all active:scale-95"
                     >
                       取消
                     </button>
@@ -809,7 +809,7 @@ export default function MailPage() {
                         </div>
                       )}
 
-                      <div className="mt-4 whitespace-pre-wrap break-words rounded-xl border border-border bg-card p-5 text-sm leading-7 shadow-sm">
+                      <div className="mt-4 whitespace-pre-wrap break-words rounded-xl border border-border bg-card p-5 text-sm leading-7 shadow-sm fade-in-up">
                         {detail.text || '(此邮件没有纯文本正文)'}
                       </div>
                     </div>
@@ -819,7 +819,7 @@ export default function MailPage() {
                     <button
                       onClick={startReply}
                       disabled={busy}
-                      className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors"
+                      className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 hover:shadow-sm hover:shadow-primary/20 disabled:opacity-40 transition-all active:scale-95"
                     >
                       <Reply className="h-3.5 w-3.5" />
                       回复
@@ -828,7 +828,7 @@ export default function MailPage() {
                       onClick={toggleRead}
                       disabled={busy}
                       title={selectedItem?.unread ? '标记为已读' : '标记为未读'}
-                      className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 transition-colors"
+                      className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 transition-all active:scale-95"
                     >
                       <MailOpen className="h-3.5 w-3.5" />
                       {selectedItem?.unread ? '标记已读' : '标记未读'}
@@ -856,7 +856,7 @@ export default function MailPage() {
                     <button
                       onClick={doDelete}
                       disabled={busy}
-                      className="ml-auto flex items-center gap-1.5 rounded-lg border border-red-200 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-40 transition-colors"
+                      className="ml-auto flex items-center gap-1.5 rounded-lg border border-red-200 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-40 transition-all active:scale-95"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                       删除

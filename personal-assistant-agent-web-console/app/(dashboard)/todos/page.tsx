@@ -36,36 +36,58 @@ export default function TodosPage() {
   const [input, setInput] = useState('')
   const [adding, setAdding] = useState(false)
   const [processingIds, setProcessingIds] = useState<Set<number>>(new Set())
+  const [error, setError] = useState('')
 
   useEffect(() => {
-    todosApi.getAll().then((data) => {
-      setTodos(data)
-      setLoading(false)
-    })
+    todosApi
+      .getAll()
+      .then((data) => {
+        setTodos(data)
+        setLoading(false)
+      })
+      .catch((e) => {
+        setError(e instanceof Error ? e.message : String(e))
+        setLoading(false)
+      })
   }, [])
 
   const handleAdd = async () => {
     const content = input.trim()
     if (!content || adding) return
     setAdding(true)
-    const newTodo = await todosApi.create(content)
-    setTodos((prev) => [newTodo, ...prev])
-    setInput('')
-    setAdding(false)
+    setError('')
+    try {
+      const newTodo = await todosApi.create(content)
+      setTodos((prev) => [newTodo, ...prev])
+      setInput('')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setAdding(false)
+    }
   }
 
   const handleComplete = async (id: number) => {
     setProcessingIds((s) => new Set(s).add(id))
-    const updated = await todosApi.complete(id)
-    setTodos((prev) => prev.map((t) => (t.id === id ? updated : t)))
-    setProcessingIds((s) => { const n = new Set(s); n.delete(id); return n })
+    setError('')
+    try {
+      const updated = await todosApi.complete(id)
+      setTodos((prev) => prev.map((t) => (t.id === id ? updated : t)))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setProcessingIds((s) => { const n = new Set(s); n.delete(id); return n })
+    }
   }
 
   const handleUpdate = async (id: number, patch: { content: string; due: string | null }) => {
     setProcessingIds((s) => new Set(s).add(id))
+    setError('')
     try {
       const updated = await todosApi.update(id, patch)
       setTodos((prev) => prev.map((t) => (t.id === id ? updated : t)))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
     } finally {
       setProcessingIds((s) => { const n = new Set(s); n.delete(id); return n })
     }
@@ -73,18 +95,24 @@ export default function TodosPage() {
 
   const handleDelete = async (id: number) => {
     setProcessingIds((s) => new Set(s).add(id))
-    await todosApi.delete(id)
-    setTodos((prev) => prev.filter((t) => t.id !== id))
-    setProcessingIds((s) => { const n = new Set(s); n.delete(id); return n })
+    setError('')
+    try {
+      await todosApi.delete(id)
+      setTodos((prev) => prev.filter((t) => t.id !== id))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setProcessingIds((s) => { const n = new Set(s); n.delete(id); return n })
+    }
   }
 
   const pending = todos.filter((t) => !t.completed)
   const completed = todos.filter((t) => t.completed)
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div className="flex h-full flex-col overflow-hidden page-enter">
       {/* Header */}
-      <header className="flex h-14 items-center gap-2 border-b border-border bg-card px-5">
+      <header className="page-enter flex h-14 items-center gap-2 border-b border-border bg-card/80 px-5 backdrop-blur-sm">
         <ListTodo className="h-4 w-4 text-primary" />
         <h1 className="text-sm font-semibold">待办事项</h1>
         <span className="ml-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
@@ -92,11 +120,17 @@ export default function TodosPage() {
         </span>
       </header>
 
+      {error && (
+        <div className="border-b border-destructive/20 bg-destructive/5 px-5 py-2">
+          <p className="text-xs text-destructive">{error}</p>
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto px-6 py-5">
         <div className="mx-auto max-w-3xl space-y-6">
           {/* Quick Add */}
-          <div className="flex gap-2">
-            <div className="flex flex-1 items-center gap-2 rounded-lg border border-border bg-card px-4 py-2.5 shadow-sm focus-within:border-primary/60 focus-within:ring-1 focus-within:ring-primary/20 transition-all">
+          <div className="flex gap-2 fade-in-up stagger-1">
+            <div className="flex flex-1 items-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 shadow-sm transition-all focus-within:border-primary/60 focus-within:shadow-md focus-within:ring-1 focus-within:ring-primary/20">
               <Plus className="h-4 w-4 shrink-0 text-muted-foreground" />
               <input
                 type="text"
@@ -112,7 +146,7 @@ export default function TodosPage() {
             <button
               onClick={handleAdd}
               disabled={!input.trim() || adding}
-              className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-all hover:bg-primary/90 hover:shadow-sm hover:shadow-primary/20 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
               添加
@@ -120,14 +154,49 @@ export default function TodosPage() {
           </div>
 
           {loading ? (
-            <div className="flex justify-center py-12">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm fade-in-up stagger-2">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-border bg-muted/30">
+                    <th className="px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground w-16">
+                      ID
+                    </th>
+                    <th className="px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                      内容
+                    </th>
+                    <th className="px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground w-36">
+                      创建时间
+                    </th>
+                    <th className="px-4 py-2.5 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground w-28">
+                      操作
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {[0, 1, 2].map((i) => (
+                    <tr key={i}>
+                      <td className="px-4 py-3">
+                        <div className="skeleton h-3 w-8 rounded" />
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="skeleton h-3 w-full max-w-md rounded" />
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="skeleton h-3 w-24 rounded" />
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="ml-auto h-3 w-16 rounded skeleton" />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           ) : (
             <>
               {/* Pending Todos */}
               {pending.length > 0 && (
-                <section>
+                <section className="fade-in-up stagger-2">
                   <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     待完成 ({pending.length})
                   </h2>
@@ -168,7 +237,7 @@ export default function TodosPage() {
 
               {/* Completed Todos */}
               {completed.length > 0 && (
-                <section>
+                <section className="fade-in-up stagger-3">
                   <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     已完成 ({completed.length})
                   </h2>
@@ -192,8 +261,10 @@ export default function TodosPage() {
               )}
 
               {todos.length === 0 && (
-                <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
-                  <CheckSquare2 className="h-10 w-10 text-muted-foreground/40" />
+                <div className="fade-in-up flex flex-col items-center justify-center gap-4 py-16 text-center">
+                  <div className="flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-primary/15 to-primary/5">
+                    <CheckSquare2 className="h-8 w-8 text-primary/50" />
+                  </div>
                   <p className="text-sm text-muted-foreground">暂无待办事项，在上方输入新增吧</p>
                 </div>
               )}
@@ -236,7 +307,7 @@ function TodoRow({
   }
 
   return (
-    <tr className={cn('group transition-colors hover:bg-muted/30', todo.completed && 'bg-muted/10')}>
+    <tr className={cn('group transition-all hover:bg-muted/30', todo.completed && 'bg-muted/10')}>
       <td className="px-4 py-3 text-xs text-muted-foreground font-mono">#{todo.id}</td>
       <td className="px-4 py-3">
         {editing ? (
@@ -328,7 +399,7 @@ function TodoRow({
                 <button
                   onClick={() => onComplete(todo.id)}
                   title="标记完成"
-                  className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-emerald-600 hover:bg-emerald-50 transition-colors"
+                  className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-emerald-600 transition-all hover:bg-emerald-50 active:scale-95"
                 >
                   <CheckSquare className="h-3.5 w-3.5" />
                   完成
@@ -343,7 +414,7 @@ function TodoRow({
               <button
                 onClick={() => onDelete(todo.id)}
                 title="删除"
-                className="rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
+                className="rounded-md p-1 text-muted-foreground transition-all hover:bg-destructive/10 hover:text-destructive active:scale-95"
               >
                 <Trash2 className="h-3.5 w-3.5" />
                 <span className="sr-only">删除</span>

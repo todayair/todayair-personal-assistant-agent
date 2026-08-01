@@ -225,6 +225,9 @@ export const notesApi = {
   create: async (title: string, content: string): Promise<Note> =>
     request<Note>('/api/notes', jsonInit('POST', { title, content })),
 
+  update: async (id: number, patch: { title: string; content: string }): Promise<Note> =>
+    request<Note>(`/api/notes/${id}`, jsonInit('PUT', patch)),
+
   delete: async (id: number): Promise<void> => {
     await request<{ ok: boolean }>(`/api/notes/${id}`, { method: 'DELETE' })
   },
