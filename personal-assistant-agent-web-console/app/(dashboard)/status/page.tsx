@@ -9,6 +9,7 @@ import {
   FolderOpen,
   Terminal,
   GitBranch,
+  Mail,
   Cpu,
   CheckSquare,
   StickyNote,
@@ -30,6 +31,7 @@ const capabilityIcons: Record<string, React.ElementType> = {
   FolderOpen,
   Terminal,
   GitBranch,
+  Mail,
   Brain,
   Database,
 }

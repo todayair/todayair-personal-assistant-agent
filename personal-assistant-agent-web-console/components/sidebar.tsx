@@ -7,6 +7,7 @@ import {
   CheckSquare,
   FileText,
   Bell,
+  Mail,
   Clock,
   Activity,
   Bot,
@@ -19,6 +20,7 @@ const navItems = [
   { href: '/todos', label: '待办', icon: CheckSquare, description: '任务管理' },
   { href: '/notes', label: '笔记', icon: FileText, description: '知识记录' },
   { href: '/reminders', label: '提醒', icon: Bell, description: '定时提醒' },
+  { href: '/mail', label: '邮箱', icon: Mail, description: '邮件收发' },
   { href: '/history', label: '历史', icon: Clock, description: '会话记录' },
   { href: '/status', label: '状态', icon: Activity, description: '系统概览' },
 ]

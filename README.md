@@ -1,11 +1,12 @@
-# Personal Assistant Agent
+﻿# Personal Assistant Agent
 
-基于 [Pydantic AI](https://ai.pydantic.dev/) + Harness 构建的交互式命令行 AI 助手，集成了联网搜索、文件操作、Shell 执行、GitHub MCP、长期记忆（向量检索）、以及待办 / 笔记 / 提醒等个人效率功能。
+基于 [Pydantic AI](https://ai.pydantic.dev/) + Harness 构建的交互式命令行 AI 助手，集成了联网搜索、文件操作、Shell 执行、GitHub / 国内邮箱 MCP、长期记忆（向量检索）、以及待办 / 笔记 / 提醒等个人效率功能。
 
 ## 功能特性
 
 - **多能力 Agent**：联网搜索（WebSearch）、文件读写（FileSystem）、执行系统命令（Shell）
 - **MCP 外部工具**：通过 `mcp_config.json` 挂载 GitHub 搜索等外部工具集
+- **国内邮箱（可选）**：QQ / 163 / 126 / Outlook 收发与管理（IMAP/SMTP + 授权码，国内直连，可搜索 / 阅读 / 发送 / 回复 / 移动 / 删除）
 - **长期记忆系统**：ChromaDB 向量数据库 + 语义检索，跨对话记住用户偏好与信息
 - **待办 / 笔记 / 提醒**：LLM 可直接用自然语言操作，数据统一存储到 MySQL（首次启动自动建库建表，初始化失败即报错终止）
 - **后台提醒**：提醒到点自动在终端弹出通知，无需打断对话
@@ -23,6 +24,8 @@
 | pydantic-ai-harness ≥ 0.14 | FileSystem / Shell / 上下文压缩 |
 | ChromaDB + sentence-transformers | 向量记忆存储与语义检索 |
 | python-dotenv | 环境变量加载 |
+| fastmcp ≥ 3.4 | 进程内 FastMCP 服务（国内邮箱） |
+| imap_tools ≥ 1.7 | 国内邮箱 IMAP 收信（QQ / 163 / 126 / Outlook） |
 | PyMySQL | MySQL 存储驱动（个人数据 + 历史会话，唯一存储后端） |
 
 ## 快速开始
@@ -62,6 +65,15 @@ python agent.py
 | `SUMMARY_MODEL` | 否 | 同主模型 | 上下文压缩摘要用模型（可设更便宜的模型省成本） |
 | `SUMMARY_TARGET_TOKENS` | 否 | `100000` | 压缩目标 token 上限 |
 | `GITHUB_PERSONAL_ACCESS_TOKEN` | 否 | - | GitHub MCP 工具的 Personal Access Token |
+| `EMAIL_PROVIDER` | 否 | `qq` | 国内邮箱服务商：`qq` / `163` / `126` / `outlook` / `custom` |
+| `EMAIL_ADDRESS` | 否 | - | 国内邮箱地址（与授权码一起填写后启用邮箱工具） |
+| `EMAIL_PASSWORD` | 否 | - | 邮箱授权码（网页端开启 IMAP/SMTP 后生成，不是登录密码） |
+| `EMAIL_USERNAME` | 否 | 同地址 | IMAP/SMTP 登录用户名（一般无需设置） |
+| `EMAIL_IMAP_HOST` / `EMAIL_IMAP_PORT` | 否 | 按预设 | 自定义 IMAP 服务器（`custom` 时必填） |
+| `EMAIL_IMAP_MODE` | 否 | 按端口 | IMAP 连接模式：`ssl` / `starttls` / `plain`（默认 993=ssl，其他=starttls） |
+| `EMAIL_SMTP_HOST` / `EMAIL_SMTP_PORT` | 否 | 按预设 | 自定义 SMTP 服务器（`custom` 时必填） |
+| `EMAIL_SMTP_STARTTLS` | 否 | 按预设 | `true` 用 STARTTLS（587 端口），`false` 用 SSL（465 端口） |
+| `EMAIL_ATTACHMENT_DIR` | 否 | `.agent_email_attachments` | 邮件附件下载保存目录 |
 | `MEMORY_ENABLED` | 否 | `true` | 是否启用外部记忆 |
 | `MEMORY_TOP_K` | 否 | `3` | 每次对话注入的记忆条数 |
 | `MEMORY_MIN_SIMILARITY` | 否 | `0.4` | 记忆注入相似度阈值，低于则丢弃 |
@@ -145,6 +157,41 @@ python agent.py
 
 > GitHub MCP 服务器需要本机安装 Docker。
 
+## 国内邮箱（QQ / 163 / 126 / Outlook）
+
+通过 IMAP/SMTP + 授权码直连国内邮箱服务器，支持**收发邮件**及搜索 / 阅读 / 回复 / 移动 / 删除，全程国内网络直连，不依赖任何境外服务。
+
+### 1. 开启 IMAP/SMTP 并获取授权码（一次性）
+
+| 邮箱 | 网页端操作 | 服务器（预设，无需填写） |
+|------|-----------|--------------------------|
+| QQ 邮箱 | 设置 → 账号 → 开启 IMAP/SMTP 服务 → 生成授权码 | imap.qq.com:993 / smtp.qq.com:465 |
+| 163 邮箱 | 设置 → POP3/SMTP/IMAP → 开启 IMAP/SMTP → 生成授权码 | imap.163.com:993 / smtp.163.com:465 |
+| 126 邮箱 | 同上 | imap.126.com:993 / smtp.126.com:465 |
+| Outlook | 设置 → 邮件 → 同步邮件 → 开启 IMAP，使用普通密码或应用密码 | imap-mail.outlook.com:993 / smtp-mail.outlook.com:587 |
+
+> 授权码**不是登录密码**，是网页端开启服务后单独生成的；QQ / 163 / 126 必须用授权码登录。163 邮箱需要额外发送 IMAP ID 命令，本项目已自动处理。
+
+### 2. 配置 .env
+
+```bash
+EMAIL_PROVIDER=qq        # qq | 163 | 126 | outlook | custom
+EMAIL_ADDRESS=你的邮箱@qq.com
+EMAIL_PASSWORD=你的授权码
+# EMAIL_USERNAME=        # 一般无需设置，默认同邮箱地址
+# EMAIL_ATTACHMENT_DIR=.agent_email_attachments
+```
+
+其他服务商把 `EMAIL_PROVIDER` 换成 `163` / `126` / `outlook` 即可；企业邮箱或自建邮箱可设 `EMAIL_PROVIDER=custom` 并填写 `EMAIL_IMAP_HOST` / `EMAIL_IMAP_PORT` / `EMAIL_SMTP_HOST` / `EMAIL_SMTP_PORT`。
+
+### 3. 使用
+
+- 重启 `python agent.py`，执行 `/tools` 应能看到 `mail_*` 前缀的工具；Web 控制台「状态」页也会显示「邮箱」能力。
+- 可用工具（8 个）：`mail_list_folders`、`mail_search_emails`、`mail_read_email`、`mail_send_email`、`mail_reply_email`、`mail_mark_read`、`mail_move_email`、`mail_delete_email`。
+- 邮件正文过长会自动截断防止撑爆上下文；带附件的邮件会先把附件保存到 `EMAIL_ATTACHMENT_DIR`（默认 `.agent_email_attachments/`）再返回本地路径，可直接用文件系统工具打开。
+
+> 提示：授权码只保存在本机 `.env`，IMAP/SMTP 直连邮箱官方服务器，不经过任何第三方服务；删除邮件默认先进回收站，永久删除不可恢复。
+
 ## Web 界面与日志
 
 Web 界面由两部分组成：Python 后端 `web_api.py`（FastAPI）与 Next.js 前端
@@ -196,6 +243,7 @@ python -m gaia_eval.run --gaia --dry-run
 ```
 .
 ├── agent.py              # 主程序：对话循环、工具注册、后台提醒、CLI
+├── email_tools.py        # 国内邮箱工具集（FastMCP 进程内服务，IMAP/SMTP + 授权码）
 ├── personal.py           # 待办 / 笔记 / 提醒 纯函数与迁移读取（parse_time / format_time 等）
 ├── personal_mysql.py     # 待办 / 笔记 / 提醒 数据层（唯一后端：MySQL，自动建库建表 + 存量迁移）
 ├── storage.py            # 存储工厂：create_personal_manager / create_session_store（仅 MySQL，失败报错）
@@ -208,7 +256,7 @@ python -m gaia_eval.run --gaia --dry-run
 ├── gaia_eval/            # GAIA 基准评测
 │   ├── run.py            # 评测 CLI 入口
 │   └── gaia_eval.py      # 数据集加载与评测逻辑
-├── mcp_config.json       # MCP 外部工具配置
+├── mcp_config.json       # MCP 外部工具配置（GitHub；国内邮箱为代码直连，见上文）
 ├── requirements.txt      # Python 依赖
 ├── .env                  # 环境变量（已 gitignore，勿提交）
 └── .agent_personal/      # 旧版待办/笔记/提醒数据（仅首次启动迁移到 MySQL 时读取，不再写入）
@@ -220,6 +268,7 @@ python -m gaia_eval.run --gaia --dry-run
 - 所有数据仅存本地：向量记忆在 `.agent_memory/`，待办/笔记/提醒与历史会话全部存本地 MySQL（`.agent_personal/`、`.agent_history/` 仅保留旧数据供一次性迁移），不上云
 - 敏感信息（手机号 / 密码 / 银行卡 / 身份证）自动过滤，不写入记忆
 - `.env` 含 API Key，已被 `.gitignore` 排除，请勿提交到公开仓库
+- 国内邮箱通过 IMAP/SMTP 直连邮箱服务器（QQ / 163 / 126 / Outlook），授权码只保存在本机 `.env`，不经过任何第三方服务；附件默认下载到 `.agent_email_attachments/`
 
 ## 许可证
 

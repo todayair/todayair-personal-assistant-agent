@@ -8,6 +8,7 @@
 - 上下文压缩：TieredCompaction（分级策略：清旧工具结果 → LLM 摘要）
 - DeepSeek Prompt Caching（默认启用，前缀自动缓存）
 - MCP 外部工具：通过 mcp_config.json 配置
+- 国内邮箱（可选）：QQ / 163 / 126 / Outlook 收信与发信（IMAP/SMTP + 授权码，国内直连）
 
 用法：
     python agent.py
@@ -30,8 +31,8 @@ from pydantic_ai import Agent
 # 核心内置能力
 from pydantic_ai.capabilities import WebSearch
 
-# MCP 配置文件加载
-from pydantic_ai.mcp import load_mcp_toolsets
+# MCP 配置文件加载 + 进程内 FastMCP 服务（国内邮箱）
+from pydantic_ai.mcp import MCPToolset, load_mcp_toolsets
 
 # Pydantic AI Harness 能力
 from pydantic_ai_harness.filesystem import FileSystem
@@ -71,6 +72,17 @@ PROMPT_CACHING_ENABLED = True
 # load_mcp_toolsets 自动替换配置中的 ${VAR} 为环境变量值
 toolsets = load_mcp_toolsets('mcp_config.json')
 
+# ---------- 国内邮箱（可选：IMAP/SMTP + 授权码，支持 QQ / 163 / 126 / Outlook） ----------
+# 在 .env 配置 EMAIL_ADDRESS / EMAIL_PASSWORD（授权码）后自动启用，
+# 提供 mail_* 工具：搜索/阅读/发送/回复/标记/移动/删除，国内网络可直接使用。
+EMAIL_ENABLED = False
+if os.getenv('EMAIL_ADDRESS') and os.getenv('EMAIL_PASSWORD'):
+    try:
+        from email_tools import server as email_server
+        toolsets = [*toolsets, MCPToolset(email_server).prefixed('mail_')]
+        EMAIL_ENABLED = True
+    except Exception as e:
+        print(f'[警告] 国内邮箱工具初始化失败，本次未启用：{e}', flush=True)
 # ---------- 创建 Agent ----------
 agent = Agent[None](  # pyright: ignore[reportCallIssue]
     model=MODEL,
@@ -443,10 +455,14 @@ async def main():
                         print("  DeepSeek Prompt Caching: 已启用（自动，无需配置）", flush=True)
                         print("      系统提示词和对话前缀会被自动缓存，降低延迟和费用。", flush=True)
                     print("", flush=True)
-                    print("  • MCP 外部工具集 — 从 mcp_config.json 加载：", flush=True)
+                    print("  • MCP 外部工具集：", flush=True)
                     if toolsets:
                         for ts in toolsets:
                             print(f"      └─ {ts}", flush=True)
+                    if EMAIL_ENABLED:
+                        print("      国内邮箱：已启用（mail_* 工具，收信/发信/回复/管理）", flush=True)
+                    else:
+                        print("      国内邮箱：未启用（在 .env 配置 EMAIL_ADDRESS / EMAIL_PASSWORD 授权码）", flush=True)
                     continue
 
                 print("AI: ", end="", flush=True)

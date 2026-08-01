@@ -1,4 +1,7 @@
-pydantic-ai>=2.20.0
+﻿pydantic-ai>=2.20.0
+fastmcp>=3.4.0
+# 国内邮箱（QQ/163/126/Outlook 等，IMAP 收信）
+imap_tools>=1.7.0
 pydantic-ai-harness>=0.14.0
 python-dotenv>=1.0
 

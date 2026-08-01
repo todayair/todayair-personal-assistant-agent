@@ -251,3 +251,99 @@ export const historyApi = {
 export const statusApi = {
   get: async (): Promise<AgentStatus> => request<AgentStatus>('/api/status'),
 }
+// ─── Mail API（国内邮箱 QQ/163/126/Outlook，IMAP/SMTP）───────────────
+
+export interface MailStatus {
+  enabled: boolean
+  address: string
+  provider: string
+  importError?: string
+}
+
+export interface EmailSummary {
+  id: string
+  date: string | null
+  from: string
+  to: string
+  subject: string
+  unread: boolean
+  hasAttachments: boolean
+  snippet: string
+}
+
+export interface EmailAttachment {
+  filename: string
+  path: string
+  size: number
+}
+
+export interface EmailDetail {
+  id: string
+  date: string | null
+  from: string
+  to: string
+  cc: string
+  subject: string
+  messageId: string
+  text: string
+  html: string
+  attachments: EmailAttachment[]
+}
+
+export interface MailConfigPayload {
+  provider: string
+  address: string
+  password: string
+  username?: string
+}
+
+export const mailApi = {
+  status: async (): Promise<MailStatus> => request<MailStatus>('/api/mail/status'),
+
+  saveConfig: async (payload: MailConfigPayload): Promise<MailStatus> =>
+    request<MailStatus>('/api/mail/config', jsonInit('POST', payload)),
+
+  logout: async (): Promise<MailStatus> =>
+    request<MailStatus>('/api/mail/logout', jsonInit('POST', {})),
+
+  folders: async (): Promise<string[]> => {
+    const data = await request<{ folders: string[] }>('/api/mail/folders')
+    return data.folders
+  },
+
+  messages: async (
+    folder: string,
+    opts?: { keyword?: string; unreadOnly?: boolean; limit?: number },
+  ): Promise<EmailSummary[]> => {
+    const params = new URLSearchParams({ folder })
+    if (opts?.keyword) params.set('keyword', opts.keyword)
+    if (opts?.unreadOnly) params.set('unreadOnly', 'true')
+    if (opts?.limit) params.set('limit', String(opts.limit))
+    const data = await request<{ messages: EmailSummary[] }>(`/api/mail/messages?${params.toString()}`)
+    return data.messages
+  },
+
+  get: async (id: string, folder: string, markRead = true): Promise<EmailDetail> => {
+    const params = new URLSearchParams({ folder, markRead: markRead ? 'true' : 'false' })
+    return request<EmailDetail>(`/api/mail/messages/${encodeURIComponent(id)}?${params.toString()}`)
+  },
+
+  send: async (payload: { to: string; subject: string; body: string; cc?: string }): Promise<{ success: boolean }> =>
+    request<{ success: boolean }>('/api/mail/send', jsonInit('POST', payload)),
+
+  reply: async (id: string, folder: string, body: string): Promise<{ success: boolean }> =>
+    request<{ success: boolean }>(`/api/mail/messages/${encodeURIComponent(id)}/reply`, jsonInit('POST', { folder, body })),
+
+  markRead: async (id: string, folder: string, read: boolean): Promise<void> => {
+    await request<{ success: boolean }>(`/api/mail/messages/${encodeURIComponent(id)}/read`, jsonInit('POST', { folder, read }))
+  },
+
+  move: async (id: string, folder: string, targetFolder: string): Promise<void> => {
+    await request<{ success: boolean }>(`/api/mail/messages/${encodeURIComponent(id)}/move`, jsonInit('POST', { folder, targetFolder }))
+  },
+
+  del: async (id: string, folder: string, permanent = false): Promise<void> => {
+    const params = new URLSearchParams({ folder, permanent: permanent ? 'true' : 'false' })
+    await request<{ success: boolean }>(`/api/mail/messages/${encodeURIComponent(id)}?${params.toString()}`, { method: 'DELETE' })
+  },
+}
