@@ -24,6 +24,10 @@ ui_stdout.log
 _dbg_*.log
 *.log
 
+# 统一日志目录（全部忽略）
+logs/
+scripts/
+
 # ===== 临时草稿 / 调试 =====
 scratch/
 
@@ -51,3 +55,7 @@ awesome-design/
 .codebuddy/
 
 gradio_ui.py
+
+# ===== Web 前端（personal-assistant-agent-web-console）=====
+personal-assistant-agent-web-console/node_modules/
+personal-assistant-agent-web-console/.next/

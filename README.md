@@ -145,6 +145,29 @@ python agent.py
 
 > GitHub MCP 服务器需要本机安装 Docker。
 
+## Web 界面与日志
+
+Web 界面由两部分组成：Python 后端 `web_api.py`（FastAPI）与 Next.js 前端
+`personal-assistant-agent-web-console/`。启动脚本统一放在 `scripts/`：
+
+| 命令 | 作用 |
+|------|------|
+| `scripts/start-api.ps1` | 后台启动 Web API（端口 8000） |
+| `scripts/start-web.ps1` | 后台启动前端（端口 3000） |
+| `scripts/start-all.ps1` | 一并启动后端 + 前端 |
+| `scripts/stop-all.ps1` | 停止以上脚本启动的服务（按 PID 记录） |
+
+**日志统一写入 `logs/` 目录**（已 gitignore，不提交）：
+
+| 文件 | 来源 |
+|------|------|
+| `logs/web-api.log` | Web API（自动轮转：单文件 5MB，保留 3 份历史） |
+| `logs/next-dev.log` | Next.js 前端开发服务器 |
+| `logs/archive/` | 历史旧日志归档，确认无用后可删除 |
+
+手动运行也一样：`python web_api.py` 会自动把日志写入 `logs/web-api.log`；
+前端 `pnpm dev` 直接跑时输出在终端，用 `scripts/start-web.ps1` 启动则写入 `logs/next-dev.log`。
+
 ## GAIA 基准评测
 
 内置 [GAIA](https://huggingface.co/datasets/gaia-benchmark/GAIA) 基准评测脚本，评估 Agent 综合能力：
@@ -178,6 +201,10 @@ python -m gaia_eval.run --gaia --dry-run
 ├── storage.py            # 存储工厂：create_personal_manager / create_session_store（仅 MySQL，失败报错）
 ├── memory.py             # 外部记忆系统（ChromaDB 向量检索）
 ├── history.py            # 历史会话存储（唯一后端：MySQL，自动建库建表 + 存量迁移，/history /load 支持）
+├── web_api.py            # Web API 后端（FastAPI，SSE 对话 / 待办 / 笔记 / 提醒 / 历史 / 状态）
+├── scripts/              # 启动 / 停止脚本（start-api / start-web / start-all / stop-all）
+├── logs/                 # 运行日志（web-api.log、next-dev.log、archive/ 历史归档）
+├── personal-assistant-agent-web-console/  # Next.js Web 控制台前端（独立工程）
 ├── gaia_eval/            # GAIA 基准评测
 │   ├── run.py            # 评测 CLI 入口
 │   └── gaia_eval.py      # 数据集加载与评测逻辑

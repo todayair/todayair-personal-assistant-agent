@@ -5,6 +5,10 @@ python-dotenv>=1.0
 # Gradio Web 前端
 gradio>=5.0.0
 
+# Web API 后端（web_api.py，供 React/Next.js 前端调用）
+fastapi>=0.115.0
+uvicorn>=0.30.0
+
 # 外部记忆系统（向量数据库）
 chromadb>=1.0.0
 sentence-transformers>=3.0.0
