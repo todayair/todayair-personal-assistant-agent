@@ -121,10 +121,13 @@ wake_event = asyncio.Event()
 
 # ---------- 个人效率工具（LLM 可调用） ----------
 @agent.tool_plain
-def add_todo(text: str) -> str:
-    """添加一条待办事项。例：'买牛奶'、'周三提交报告'"""
-    t = personal.add_todo(text)
-    return f"已添加待办 #{t['id']}: {t['text']}"
+def add_todo(text: str, due: str = "") -> str:
+    """添加一条待办事项，可指定截止时间（会显示在日历中）。
+    例：text='买牛奶'、text='周三提交报告'、due='明天18点'、due='明天'（仅日期→默认当天9:00）、due='2026-08-02 15:00'
+    """
+    t = personal.add_todo(text, due or None)
+    due_text = format_time(t["due"]) if t.get("due") else "未设置"
+    return f"已添加待办 #{t['id']}: {t['text']}（截止：{due_text}）"
 
 
 @agent.tool_plain
@@ -150,6 +153,21 @@ def complete_todo(todo_id: int) -> str:
 def delete_todo(todo_id: int) -> str:
     """删除一条待办，参数为待办编号"""
     return "已删除" if personal.delete_todo(todo_id) else f"未找到待办 #{todo_id}"
+
+
+@agent.tool_plain
+def update_todo(todo_id: int, text: str = "", due: str = "") -> str:
+    """修改一条待办的内容或截止时间（改动会同步显示在日历上）。
+    例：todo_id=3, text='明天出门'；todo_id=3, due='明天9点'；todo_id=3, text='后天开会', due='后天14:00'
+    只改其中一项时，另一项留空即可。"""
+    if text or due:
+        if not personal.update_todo(todo_id, text=text or None, due=due or None):
+            return f"未找到待办 #{todo_id}"
+    row = next((t for t in personal.list_todos() if t["id"] == todo_id), None)
+    if row is None:
+        return f"未找到待办 #{todo_id}"
+    due_text = format_time(row["due"]) if row.get("due") else "未设置"
+    return f"已更新待办 #{row['id']}: {row['text']}（截止：{due_text}）"
 
 
 @agent.tool_plain
@@ -179,7 +197,7 @@ def delete_note(note_id: int) -> str:
 
 @agent.tool_plain
 def add_reminder(text: str = "提醒", when: str = "") -> str:
-    """设置一条提醒。when 支持自然语言：'15:00'、'明天 9:00'、'3点'、'下午3点'、'3点一刻'、'30分钟后'、'2026-07-31 15:00'。例：text='开会', when='15:00'
+    """设置一条提醒。when 支持自然语言：'15:00'、'明天 9:00'、'3点'、'下午3点'、'3点一刻'、'30分钟后'、'2026-07-31 15:00'、'明天'（仅日期→当天9:00）。例：text='开会', when='15:00'
     只在缺失必要信息时才询问，其余情况直接调用本工具：
     - text（内容）：用户没给具体内容（如"提醒我1分钟后"）时，不要停下来询问，直接省略该参数（使用默认内容"提醒"），或按语境用一个简短内容代替。
     - when（时间）：优先从用户的话里解析（"1分钟后""明天9点""3点一刻"等）。只有当用户完全没给时间、也无法从语境推断（如只说"提醒我"）时，才用一句话询问希望什么时候提醒，等用户给出时间后再调用本工具；绝不猜测或编造时间，也不向用户报错。"""

@@ -39,6 +39,7 @@ from history import (
 )
 from memory import EMBED_MODEL, get_memory
 from storage import create_session_store
+from personal import extract_time
 
 store = create_session_store()
 memory = get_memory()
@@ -167,6 +168,7 @@ def _todo_dict(t: dict[str, Any]) -> dict[str, Any]:
         "id": t["id"],
         "content": t["text"],
         "completed": bool(t["done"]),
+        "dueAt": _iso(float(t["due"])) if t.get("due") else None,
         "createdAt": _iso(float(t["created_at"])),
     }
 
@@ -338,6 +340,7 @@ async def list_todos() -> list[dict[str, Any]]:
 
 class TodoBody(BaseModel):
     content: str
+    due: str = ""
 
 
 @app.post("/api/todos")
@@ -345,7 +348,19 @@ async def add_todo(body: TodoBody) -> dict[str, Any]:
     text = body.content.strip()
     if not text:
         raise HTTPException(400, "内容不能为空")
-    return _todo_dict(personal.add_todo(text))
+    due = ""
+    if body.due.strip():
+        try:
+            ts = _parse_iso(body.due.strip())
+            due = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+        except Exception as e:
+            raise HTTPException(400, "截止时间解析失败: " + str(e)) from e
+    else:
+        # 未显式指定截止时间时，尝试从内容中提取（如“明天出门”→“明天 09:00”）
+        text, ts = extract_time(text)
+        if ts is not None:
+            due = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+    return _todo_dict(personal.add_todo(text, due or None))
 
 
 @app.post("/api/todos/{tid}/complete")
@@ -354,6 +369,40 @@ async def complete_todo(tid: int) -> dict[str, Any]:
         raise HTTPException(404, "待办不存在")
     row = next((t for t in personal.list_todos() if t["id"] == tid), None)
     return _todo_dict(row) if row else {"id": tid, "content": "", "completed": True, "createdAt": _iso(time.time())}
+
+
+class TodoUpdateBody(BaseModel):
+    content: str | None = None
+    due: str | None = None
+
+
+@app.put("/api/todos/{tid}")
+async def update_todo(tid: int, body: TodoUpdateBody) -> dict[str, Any]:
+    text = body.content.strip() if body.content is not None else None
+    if text is not None and not text:
+        raise HTTPException(400, "内容不能为空")
+    due: str | None = None
+    if body.due is not None:
+        if body.due.strip():
+            try:
+                ts = _parse_iso(body.due.strip())
+                due = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+            except Exception as e:
+                raise HTTPException(400, "截止时间解析失败: " + str(e)) from e
+        else:
+            due = ""
+    elif text is not None:
+        # 未显式指定截止时间时，尝试从新内容中提取（如“明天出门”→“明天 09:00”）
+        new_text, ts = extract_time(text)
+        if ts is not None:
+            text = new_text
+            due = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+    if not personal.update_todo(tid, text=text, due=due):
+        raise HTTPException(404, "待办不存在")
+    row = next((t for t in personal.list_todos() if t["id"] == tid), None)
+    if row is None:
+        raise HTTPException(404, "待办不存在")
+    return _todo_dict(row)
 
 
 @app.delete("/api/todos/{tid}")

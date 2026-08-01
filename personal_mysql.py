@@ -1,7 +1,7 @@
 """
 个人效率工具：MySQL 存储后端（唯一存储后端）
 
-公开接口：add_todo / list_todos / complete_todo / delete_todo / add_note /
+公开接口：add_todo / list_todos / complete_todo / update_todo / delete_todo / add_note /
 list_notes / delete_note / add_reminder / list_reminders / delete_reminder /
 seconds_until_next / check_reminders，以及 todos / notes / reminders 属性
 （与旧版 personal.py 的 PersonalManager 保持一致，便于调用方无感切换）。
@@ -33,6 +33,7 @@ _TABLES: dict[str, str] = {
             id INT AUTO_INCREMENT PRIMARY KEY,
             text TEXT NOT NULL,
             is_done TINYINT(1) NOT NULL DEFAULT 0,
+            due_ts DOUBLE NULL,
             created_at DOUBLE NOT NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """,
@@ -132,8 +133,20 @@ class MySQLPersonalManager:
             with conn.cursor() as cur:
                 for ddl in _TABLES.values():
                     cur.execute(ddl)
+                self._ensure_todo_due_column(conn)
         finally:
             conn.close()
+
+    def _ensure_todo_due_column(self, conn) -> None:
+        """老库兼容：todos 表补充 due_ts 列（待办截止时间，可空）"""
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM information_schema.columns "
+                "WHERE table_schema = DATABASE() AND table_name = 'todos' "
+                "AND column_name = 'due_ts'"
+            )
+            if cur.fetchone()[0] == 0:
+                cur.execute("ALTER TABLE todos ADD COLUMN due_ts DOUBLE NULL")
 
     def _maybe_migrate_from_json(self) -> None:
         """首次使用（库中三表皆空）时，把 .agent_personal/ 下的存量数据导入"""
@@ -182,33 +195,49 @@ class MySQLPersonalManager:
         )
 
     # ---------- 待办 ----------
-    def add_todo(self, text: str) -> Item:
+    def add_todo(self, text: str, due: str | None = None) -> Item:
+        due_ts = parse_time(due) if due else None
         created = time.time()
         conn = self._connect()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO todos (text, is_done, created_at) VALUES (%s, 0, %s)",
-                    (text, created),
+                    "INSERT INTO todos (text, is_done, due_ts, created_at) VALUES (%s, 0, %s, %s)",
+                    (text, due_ts, created),
                 )
                 rid = cur.lastrowid
         finally:
             conn.close()
-        return {"id": rid, "text": text, "done": False, "created_at": created}
+        return {"id": rid, "text": text, "done": False, "due": due_ts, "created_at": created}
 
     def list_todos(self, only_pending: bool = False) -> list[Item]:
         sql = (
-            "SELECT id, text, is_done, created_at FROM todos"
+            "SELECT id, text, is_done, due_ts, created_at FROM todos"
             + (" WHERE is_done = 0" if only_pending else "")
-            + " ORDER BY is_done ASC, created_at DESC"
+            + " ORDER BY is_done ASC, COALESCE(due_ts, 0) ASC, created_at DESC"
         )
         return [
-            {"id": r[0], "text": r[1], "done": bool(r[2]), "created_at": r[3]}
+            {"id": r[0], "text": r[1], "done": bool(r[2]), "due": r[3], "created_at": r[4]}
             for r in self._fetch(sql)
         ]
 
     def complete_todo(self, todo_id: int) -> bool:
         return self._execute("UPDATE todos SET is_done = 1 WHERE id = %s", (todo_id,)) > 0
+
+    def update_todo(self, todo_id: int, text: str | None = None, due: str | None = None) -> bool:
+        """更新待办字段：text / due（None 表示不修改；due 传空串表示清除截止时间）"""
+        sets: list[str] = []
+        args: list[object] = []
+        if text is not None:
+            sets.append("text = %s")
+            args.append(text)
+        if due is not None:
+            sets.append("due_ts = %s")
+            args.append(parse_time(due) if due else None)
+        if not sets:
+            return True
+        args.append(todo_id)
+        return self._execute(f"UPDATE todos SET {', '.join(sets)} WHERE id = %s", tuple(args)) > 0
 
     def delete_todo(self, todo_id: int) -> bool:
         return self._execute("DELETE FROM todos WHERE id = %s", (todo_id,)) > 0

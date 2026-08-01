@@ -7,6 +7,7 @@ import {
   CheckSquare,
   FileText,
   Bell,
+  CalendarDays,
   Mail,
   Clock,
   Activity,
@@ -18,6 +19,7 @@ import { cn } from '@/lib/utils'
 const navItems = [
   { href: '/chat', label: '对话', icon: MessageSquare, description: 'AI 聊天' },
   { href: '/todos', label: '待办', icon: CheckSquare, description: '任务管理' },
+  { href: '/calendar', label: '日历', icon: CalendarDays, description: '日程计划' },
   { href: '/notes', label: '笔记', icon: FileText, description: '知识记录' },
   { href: '/reminders', label: '提醒', icon: Bell, description: '定时提醒' },
   { href: '/mail', label: '邮箱', icon: Mail, description: '邮件收发' },

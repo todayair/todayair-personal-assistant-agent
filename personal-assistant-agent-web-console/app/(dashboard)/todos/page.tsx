@@ -9,6 +9,8 @@ import {
   CheckSquare2,
   Loader2,
   ListTodo,
+  Check,
+  Pencil,
 } from 'lucide-react'
 import { todosApi, type Todo } from '@/services/api'
 import { cn } from '@/lib/utils'
@@ -20,6 +22,12 @@ function formatDate(iso: string) {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+function toDateTimeLocal(iso: string) {
+  const d = new Date(iso)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 export default function TodosPage() {
@@ -51,6 +59,16 @@ export default function TodosPage() {
     const updated = await todosApi.complete(id)
     setTodos((prev) => prev.map((t) => (t.id === id ? updated : t)))
     setProcessingIds((s) => { const n = new Set(s); n.delete(id); return n })
+  }
+
+  const handleUpdate = async (id: number, patch: { content: string; due: string | null }) => {
+    setProcessingIds((s) => new Set(s).add(id))
+    try {
+      const updated = await todosApi.update(id, patch)
+      setTodos((prev) => prev.map((t) => (t.id === id ? updated : t)))
+    } finally {
+      setProcessingIds((s) => { const n = new Set(s); n.delete(id); return n })
+    }
   }
 
   const handleDelete = async (id: number) => {
@@ -87,7 +105,7 @@ export default function TodosPage() {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleAdd()
                 }}
-                placeholder="新增待办事项…"
+                placeholder="新增待办事项，支持“明天”“明天9点”…"
                 className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
               />
             </div>
@@ -139,6 +157,7 @@ export default function TodosPage() {
                             processing={processingIds.has(todo.id)}
                             onComplete={handleComplete}
                             onDelete={handleDelete}
+                            onUpdate={handleUpdate}
                           />
                         ))}
                       </tbody>
@@ -163,6 +182,7 @@ export default function TodosPage() {
                             processing={processingIds.has(todo.id)}
                             onComplete={handleComplete}
                             onDelete={handleDelete}
+                            onUpdate={handleUpdate}
                           />
                         ))}
                       </tbody>
@@ -190,24 +210,83 @@ function TodoRow({
   processing,
   onComplete,
   onDelete,
+  onUpdate,
 }: {
   todo: Todo
   processing: boolean
   onComplete: (id: number) => void
   onDelete: (id: number) => void
+  onUpdate: (id: number, patch: { content: string; due: string | null }) => Promise<void>
 }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(todo.content)
+  const [draftDue, setDraftDue] = useState(todo.dueAt ? toDateTimeLocal(todo.dueAt) : '')
+
+  const startEdit = () => {
+    setDraft(todo.content)
+    setDraftDue(todo.dueAt ? toDateTimeLocal(todo.dueAt) : '')
+    setEditing(true)
+  }
+
+  const saveEdit = async () => {
+    const content = draft.trim()
+    if (!content || processing) return
+    await onUpdate(todo.id, { content, due: draftDue ? new Date(draftDue).toISOString() : null })
+    setEditing(false)
+  }
+
   return (
     <tr className={cn('group transition-colors hover:bg-muted/30', todo.completed && 'bg-muted/10')}>
       <td className="px-4 py-3 text-xs text-muted-foreground font-mono">#{todo.id}</td>
       <td className="px-4 py-3">
-        <span
-          className={cn(
-            'text-sm',
-            todo.completed ? 'line-through text-muted-foreground' : 'text-foreground',
-          )}
-        >
-          {todo.content}
-        </span>
+        {editing ? (
+          <div className="flex flex-col gap-2">
+            <input
+              autoFocus
+              type="text"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) saveEdit()
+              }}
+              className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary/60 focus:outline-none"
+            />
+            <div className="flex items-center gap-2">
+              <input
+                type="datetime-local"
+                value={draftDue}
+                onChange={(e) => setDraftDue(e.target.value)}
+                title="截止时间（留空表示不设置）"
+                className="rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground focus:border-primary/60 focus:outline-none"
+              />
+              {draftDue && (
+                <button
+                  onClick={() => setDraftDue('')}
+                  title="清除截止时间"
+                  className="text-xs text-muted-foreground hover:text-destructive transition-colors"
+                >
+                  清除
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div>
+            <span
+              className={cn(
+                'text-sm',
+                todo.completed ? 'line-through text-muted-foreground' : 'text-foreground',
+              )}
+            >
+              {todo.content}
+            </span>
+            {todo.dueAt && (
+              <div className="mt-0.5 text-xs text-muted-foreground/80">
+                截止：{formatDate(todo.dueAt)}
+              </div>
+            )}
+          </div>
+        )}
       </td>
       <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
         {formatDate(todo.createdAt)}
@@ -216,8 +295,35 @@ function TodoRow({
         <div className="flex items-center justify-end gap-2">
           {processing ? (
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          ) : editing ? (
+            <>
+              <button
+                onClick={saveEdit}
+                disabled={!draft.trim()}
+                title="保存修改"
+                className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-emerald-600 hover:bg-emerald-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <Check className="h-3.5 w-3.5" />
+                保存
+              </button>
+              <button
+                onClick={() => setEditing(false)}
+                title="取消"
+                className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted transition-colors"
+              >
+                取消
+              </button>
+            </>
           ) : (
             <>
+              <button
+                onClick={startEdit}
+                title="编辑"
+                className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                <span className="sr-only">编辑</span>
+              </button>
               {!todo.completed && (
                 <button
                   onClick={() => onComplete(todo.id)}

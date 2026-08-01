@@ -30,6 +30,7 @@ export interface Todo {
   id: number
   content: string
   completed: boolean
+  dueAt?: string | null
   createdAt: string
 }
 
@@ -196,11 +197,20 @@ export const chatApi = {
 export const todosApi = {
   getAll: async (): Promise<Todo[]> => request<Todo[]>('/api/todos'),
 
-  create: async (content: string): Promise<Todo> =>
-    request<Todo>('/api/todos', jsonInit('POST', { content })),
+  create: async (content: string, due?: string): Promise<Todo> =>
+    request<Todo>('/api/todos', jsonInit('POST', { content, ...(due ? { due } : {}) })),
 
   complete: async (id: number): Promise<Todo> =>
     request<Todo>(`/api/todos/${id}/complete`, jsonInit('POST')),
+
+  update: async (id: number, patch: { content?: string; due?: string | null }): Promise<Todo> =>
+    request<Todo>(
+      `/api/todos/${id}`,
+      jsonInit('PUT', {
+        ...(patch.content !== undefined ? { content: patch.content } : {}),
+        ...(patch.due !== undefined ? { due: patch.due ?? '' } : {}),
+      }),
+    ),
 
   delete: async (id: number): Promise<void> => {
     await request<{ ok: boolean }>(`/api/todos/${id}`, { method: 'DELETE' })
