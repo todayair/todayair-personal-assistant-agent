@@ -11,7 +11,6 @@ import {
   Mail,
   Clock,
   Activity,
-  Bot,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -55,8 +54,12 @@ export function Sidebar() {
     <aside className="flex h-full w-56 flex-col bg-sidebar text-sidebar-foreground">
       {/* Logo / Brand */}
       <div className="flex h-14 items-center gap-2.5 border-b border-sidebar-border px-4">
-        <div className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-primary/80 shadow-md shadow-primary/30">
-          <Bot className="h-4 w-4 text-primary-foreground" />
+        <div className="relative h-8 w-8">
+          <img
+            src="/logo.svg"
+            alt="AI 助手标志"
+            className="h-8 w-8 rounded-lg object-cover shadow-md shadow-primary/30"
+          />
           <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full bg-emerald-400 ring-2 ring-sidebar" />
         </div>
         <div className="flex flex-1 items-center justify-center leading-none">

@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import { Noto_Serif_SC, Rokkitt } from 'next/font/google'
+import ReminderOverlay from '@/components/reminder-overlay'
 import './globals.css'
 
 const _notoSerifSC = Noto_Serif_SC({
@@ -35,6 +36,7 @@ export default function RootLayout({
     <html lang="zh-CN" className="bg-background">
       <body className={`${_notoSerifSC.variable} ${_rokkitt.variable} font-sans antialiased`}>
         {children}
+        <ReminderOverlay />
       </body>
     </html>
   )

@@ -39,8 +39,9 @@ except ImportError:
 
 _has_hub = False
 get_token: Any = None
+hf_hub_download: Any = None
 try:
-    from huggingface_hub import get_token
+    from huggingface_hub import get_token, hf_hub_download
     _has_hub = True
 except ImportError:
     pass
@@ -59,6 +60,7 @@ class GaiaQuestion:
     file_name: str | None = None
     file_path: str | None = None
     attachment_dir: str | None = None     # 附件的本地目录
+    attachment_repo_path: str | None = None  # 附件在 HF 仓库中的路径
 
 
 @dataclass
@@ -95,7 +97,11 @@ class GaiaReport:
         print(f"  GAIA 基准评测报告")
         print(f"  {'=' * 44}")
         print(f"  时间: {self.timestamp}")
-        print(f"  模型: {self.config.get('model', '?')}")
+        model_text = str(self.config.get("model", "?"))
+        details = self.config.get("model_details")
+        if details:
+            model_text += "  (" + ", ".join(f"{k}={v}" for k, v in details.items()) + ")"
+        print(f"  模型: {model_text}")
         print(f"  {'=' * 44}")
         print(f"  ⭐ 准确率: {self.accuracy:.1f}%  ({self.num_passed}/{self.num_questions})")
         print(f"  {'=' * 44}")
@@ -163,11 +169,44 @@ def check_auth() -> tuple[bool, str]:
     return True, "已认证"
 
 
+def _download_attachment(q: GaiaQuestion) -> str | None:
+    """把附件从 HF 仓库下载到本地 .attachments/ 目录
+
+    Args:
+        q: 题目对象（需含 attachment_repo_path）
+
+    Returns:
+        本地绝对路径；下载失败返回 None
+    """
+    if not q.attachment_repo_path:
+        return None
+    if not _has_hub or hf_hub_download is None:
+        print("  错误: 需要安装 huggingface_hub 才能下载附件")
+        return None
+    try:
+        cache_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            ".attachments",
+        )
+        os.makedirs(cache_dir, exist_ok=True)
+        local = hf_hub_download(
+            repo_id="gaia-benchmark/GAIA",
+            filename=q.attachment_repo_path,
+            repo_type="dataset",
+            local_dir=cache_dir,
+        )
+        return os.path.abspath(local)
+    except Exception as e:
+        print(f"  附件下载失败 {q.file_name}: {e}", flush=True)
+        return None
+
+
 def load_gaia_dataset(
     levels: list[int] | None = None,
     max_questions: int | None = None,
     skip_attachments: bool = False,
     cache_dir: str | None = None,
+    download_attachments: bool = True,
 ) -> list[GaiaQuestion]:
     """加载 GAIA 验证集
 
@@ -176,6 +215,7 @@ def load_gaia_dataset(
         max_questions: 最多加载题目数
         skip_attachments: 跳过带附件的题目
         cache_dir: 缓存目录
+        download_attachments: 是否把附件下载到本地（默认 True）
     """
     if not _has_datasets:
         print("  错误: 需要安装 datasets 库: pip install datasets")
@@ -219,22 +259,30 @@ def load_gaia_dataset(
             skipped_attach += 1
             continue
 
-        # 判断是否有附件目录
-        attach_dir = None
-        file_path = row.get("file_path") or None
-        if file_path:
-            # 附件存储在数据集根目录下
-            attach_dir = os.path.dirname(file_path) if file_path else None
+        # 附件在 HF 仓库中的原始路径（如 2023/validation/xxx.xlsx）
+        repo_path = row.get("file_path") or None
 
-        questions.append(GaiaQuestion(
+        q = GaiaQuestion(
             task_id=row["task_id"],
             question=row["Question"],
             level=q_level,
             true_answer=row["Final answer"],
             file_name=row.get("file_name") or None,
-            file_path=file_path,
-            attachment_dir=attach_dir,
-        ))
+            file_path=None,
+            attachment_dir=None,
+            attachment_repo_path=repo_path,
+        )
+
+        # 下载附件到本地（避免 Agent 因找不到附件而空转卡死）
+        if q.file_name and download_attachments:
+            local = _download_attachment(q)
+            if local:
+                q.file_path = local
+                q.attachment_dir = os.path.dirname(local)
+            else:
+                print(f"  警告: 附件下载失败，该题将被跳过: {q.task_id}", flush=True)
+
+        questions.append(q)
 
         if max_questions and len(questions) >= max_questions:
             break
@@ -346,6 +394,7 @@ async def run_gaia(
     questions: list[GaiaQuestion],
     max_concurrent: int = 1,       # GAIA 题需要串行（工具调用可能有状态）
     verbose: bool = False,
+    timeout_per_question: float = 420.0,   # 单题超时秒数，超时记为失败继续下一题
 ) -> GaiaReport:
     """运行 GAIA 评测
 
@@ -354,6 +403,7 @@ async def run_gaia(
         questions: GAIA 题目列表
         max_concurrent: 并发数（GAIA 建议串行）
         verbose: 详细输出
+        timeout_per_question: 单题超时秒数，超时记为失败继续下一题（默认 420）
     """
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     results: list[GaiaResult] = []
@@ -368,19 +418,45 @@ async def run_gaia(
         error = None
         agent_responses: list[str] = []
 
-        # 构造 Agent 输入：带上附件提示
-        prompt = q.question
-        if q.file_name:
-            prompt += f"\n\n（附件文件: {q.file_name}，请在当前工作目录下查找）"
-
         print(f"  [{idx:3d}/{total}] L{q.level} {q.task_id:12s} ...", end=" ", flush=True)
 
+        # 构造 Agent 输入：带上附件提示
+        prompt = q.question
+        if q.file_name and q.file_path:
+            prompt += (
+                f"\n\n（附件已下载到本地: {q.file_path}\n"
+                "请直接用 Shell/FileSystem 工具读取该文件，不要联网搜索文件名）"
+            )
+        elif q.file_name:
+            # 附件下载失败：直接判失败，不浪费模型调用
+            results.append(GaiaResult(
+                task_id=q.task_id,
+                question=q.question,
+                level=q.level,
+                true_answer=q.true_answer,
+                agent_answer="<SKIP: 附件下载失败>",
+                passed=False,
+                near_miss=False,
+                timing=0.0,
+                error="附件下载失败，题目被跳过",
+                agent_responses=[],
+            ))
+            print("✗  0.0s (附件下载失败)", flush=True)
+            continue
+
         try:
-            # 发送问题
+            # 发送问题（单题全局超时，防止工具/网络卡死整场评测）
             history = None
-            response = await agent_ctx.run(prompt, message_history=history)
+            response = await asyncio.wait_for(
+                agent_ctx.run(prompt, message_history=history),
+                timeout=timeout_per_question,
+            )
             agent_responses.append(response.output)
             agent_answer = response.output
+        except asyncio.TimeoutError:
+            error = f"超过单题时限 {timeout_per_question:.0f}s"
+            agent_answer = f"<TIMEOUT: {error}>"
+            print(f"⏱  超时 {timeout_per_question:.0f}s", flush=True)
         except Exception as e:
             error = str(e)
             agent_answer = f"<ERROR: {e}>"
@@ -450,7 +526,18 @@ async def run_gaia(
 def _capture_config(agent_ctx) -> dict[str, object]:
     config = {}
     try:
-        config["model"] = str(getattr(agent_ctx, "model", "?"))
+        model_obj = getattr(agent_ctx, "model", None)
+        config["model"] = str(model_obj) if model_obj is not None else "?"
+        details = {}
+        for attr in ("model_name", "name", "base_url"):
+            try:
+                v = getattr(model_obj, attr, None)
+                if v:
+                    details[attr] = str(v)
+            except Exception:
+                pass
+        if details:
+            config["model_details"] = details
     except Exception:
         config["model"] = "?"
     try:

@@ -13,6 +13,7 @@ import {
   Pencil,
 } from 'lucide-react'
 import { todosApi, type Todo } from '@/services/api'
+import ConfirmDialog from '@/components/confirm-dialog'
 import { cn } from '@/lib/utils'
 
 function formatDate(iso: string) {
@@ -37,6 +38,7 @@ export default function TodosPage() {
   const [adding, setAdding] = useState(false)
   const [processingIds, setProcessingIds] = useState<Set<number>>(new Set())
   const [error, setError] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState<Todo | null>(null)
 
   useEffect(() => {
     todosApi
@@ -52,7 +54,7 @@ export default function TodosPage() {
   }, [])
 
   const handleAdd = async () => {
-    const content = input.trim()
+    const content = input.trim().slice(0, 30)
     if (!content || adding) return
     setAdding(true)
     setError('')
@@ -140,8 +142,12 @@ export default function TodosPage() {
                   if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleAdd()
                 }}
                 placeholder="新增待办事项，支持“明天”“明天9点”…"
+                maxLength={30}
                 className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
               />
+              <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                {input.length}/30
+              </span>
             </div>
             <button
               onClick={handleAdd}
@@ -225,7 +231,7 @@ export default function TodosPage() {
                             todo={todo}
                             processing={processingIds.has(todo.id)}
                             onComplete={handleComplete}
-                            onDelete={handleDelete}
+                            onDelete={(t) => setConfirmDelete(t)}
                             onUpdate={handleUpdate}
                           />
                         ))}
@@ -250,7 +256,7 @@ export default function TodosPage() {
                             todo={todo}
                             processing={processingIds.has(todo.id)}
                             onComplete={handleComplete}
-                            onDelete={handleDelete}
+                            onDelete={(t) => setConfirmDelete(t)}
                             onUpdate={handleUpdate}
                           />
                         ))}
@@ -272,6 +278,18 @@ export default function TodosPage() {
           )}
         </div>
       </div>
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        title="删除待办"
+        description={confirmDelete ? `确定删除「${confirmDelete.content}」吗？此操作不可恢复。` : ''}
+        onCancel={() => setConfirmDelete(null)}
+        onConfirm={() => {
+          if (confirmDelete) {
+            handleDelete(confirmDelete.id)
+            setConfirmDelete(null)
+          }
+        }}
+      />
     </div>
   )
 }
@@ -286,7 +304,7 @@ function TodoRow({
   todo: Todo
   processing: boolean
   onComplete: (id: number) => void
-  onDelete: (id: number) => void
+  onDelete: (todo: Todo) => void
   onUpdate: (id: number, patch: { content: string; due: string | null }) => Promise<void>
 }) {
   const [editing, setEditing] = useState(false)
@@ -312,16 +330,22 @@ function TodoRow({
       <td className="px-4 py-3">
         {editing ? (
           <div className="flex flex-col gap-2">
-            <input
-              autoFocus
-              type="text"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.nativeEvent.isComposing) saveEdit()
-              }}
-              className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary/60 focus:outline-none"
-            />
+            <div className="flex items-center gap-2">
+              <input
+                autoFocus
+                type="text"
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) saveEdit()
+                }}
+                maxLength={30}
+                className="flex-1 rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary/60 focus:outline-none"
+              />
+              <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                {draft.length}/30
+              </span>
+            </div>
             <div className="flex items-center gap-2">
               <input
                 type="datetime-local"
@@ -412,7 +436,7 @@ function TodoRow({
                 </span>
               )}
               <button
-                onClick={() => onDelete(todo.id)}
+                onClick={() => onDelete(todo)}
                 title="删除"
                 className="rounded-md p-1 text-muted-foreground transition-all hover:bg-destructive/10 hover:text-destructive active:scale-95"
               >

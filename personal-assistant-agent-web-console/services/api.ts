@@ -10,11 +10,20 @@
 
 export type MessageRole = 'user' | 'assistant' | 'tool'
 
+export interface Attachment {
+  name: string
+  path: string
+  size: number
+  type?: string
+  url?: string
+}
+
 export interface ChatMessage {
   id: string
   role: MessageRole
   content: string
   toolName?: string
+  attachments?: Attachment[]
   timestamp: string
 }
 
@@ -49,7 +58,40 @@ export interface Reminder {
   text: string
   fireAt: string
   status: ReminderStatus
+  repeatRule: string
+  task?: string
   createdAt: string
+}
+
+export interface FiredReminder {
+  ts: number
+  id: number
+  text: string
+  when?: number | null
+}
+
+export const REPEAT_OPTIONS = [
+  { value: 'once', label: '不重复' },
+  { value: 'daily', label: '每天' },
+  { value: 'weekday', label: '工作日' },
+  { value: 'weekly', label: '每周' },
+  { value: 'monthly', label: '每月' },
+] as const
+
+export function repeatLabel(rule: string): string {
+  if (rule.startsWith('weekly:')) {
+    const [a, b] = rule.split(':')[1].split('-').map(Number)
+    const weekdays = '一二三四五六日'
+    const one = '每周' + (weekdays.charAt(a - 1) || '')
+    if (!b || b === a) return one
+    return one + '~' + (weekdays.charAt(b - 1) || '')
+  }
+  if (rule.startsWith('monthly:')) {
+    const [a, b] = rule.split(':')[1].split('-').map(Number)
+    if (!b || b === a) return '每月' + a + '日'
+    return '每月' + a + '~' + b + '日'
+  }
+  return REPEAT_OPTIONS.find((o) => o.value === rule)?.label ?? '不重复'
 }
 
 export interface AgentStatus {
@@ -77,6 +119,12 @@ export interface AgentStatus {
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000'
+
+/** 附件访问地址：兼容后端返回的绝对 URL 与历史数据里的相对路径 */
+export function attachmentUrl(a: Attachment): string {
+  if (!a.url) return ''
+  return a.url.startsWith('http') ? a.url : `${API_BASE}${a.url}`
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, init)
@@ -128,8 +176,20 @@ export const chatApi = {
     onChunk: (chunk: string) => void,
     onToolCall: (toolName: string) => void,
     onToolEnd?: (toolName: string) => void,
+    attachments: Attachment[] = [],
   ): Promise<ChatMessage> => {
-    const res = await fetch(`${API_BASE}/api/chat/${sessionId}`, jsonInit('POST', { content }))
+    // 后端 30 秒内未开始响应（服务卡死/未启动）则中止，避免页面无限等待
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 30_000)
+    let res: Response
+    try {
+      res = await fetch(
+        `${API_BASE}/api/chat/${sessionId}`,
+        { ...jsonInit('POST', { content, attachments }), signal: controller.signal },
+      )
+    } finally {
+      clearTimeout(timer)
+    }
     if (!res.ok) {
       let detail = `HTTP ${res.status}`
       try {
@@ -238,11 +298,38 @@ export const notesApi = {
 export const remindersApi = {
   getAll: async (): Promise<Reminder[]> => request<Reminder[]>('/api/reminders'),
 
-  create: async (text: string, fireAt: string): Promise<Reminder> =>
-    request<Reminder>('/api/reminders', jsonInit('POST', { text, fireAt })),
+  fired: async (after: number): Promise<FiredReminder[]> =>
+    request<FiredReminder[]>(`/api/reminders/fired?after=${after}`),
+
+  create: async (text: string, fireAt: string, repeat = 'once', task = ''): Promise<Reminder> =>
+    request<Reminder>('/api/reminders', jsonInit('POST', { text, fireAt, repeat, task })),
+
+  update: async (id: number, text: string, fireAt: string, repeat = 'once', task = ''): Promise<Reminder> =>
+    request<Reminder>(`/api/reminders/${id}`, jsonInit('PUT', { text, fireAt, repeat, task })),
 
   delete: async (id: number): Promise<void> => {
     await request<{ ok: boolean }>(`/api/reminders/${id}`, { method: 'DELETE' })
+  },
+}
+
+// ─── Uploads API ──────────────────────────────────────────────────────────────
+
+export const uploadsApi = {
+  upload: async (file: File): Promise<Attachment> => {
+    const form = new FormData()
+    form.append('file', file)
+    const res = await fetch(`${API_BASE}/api/upload`, { method: 'POST', body: form })
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`
+      try {
+        const body = await res.json()
+        if (body?.detail) detail = String(body.detail)
+      } catch {
+        // ignore non-JSON error body
+      }
+      throw new Error(detail)
+    }
+    return (await res.json()) as Attachment
   },
 }
 

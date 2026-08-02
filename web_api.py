@@ -20,9 +20,10 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # 复用 agent.py 的全局 agent / personal / wake_event 与对话逻辑
@@ -48,7 +49,7 @@ memory = get_memory()
 _histories: dict[str, list[Any]] = {}
 
 _start_time = time.time()
-VERSION = "1.0.0"
+VERSION = "1.0"
 
 # ---------- 日志 ----------
 # 统一写入 logs/web-api.log（自动轮转），同时保留终端输出
@@ -62,7 +63,7 @@ CAPABILITIES: list[dict[str, str]] = [
     {"name": "文件系统", "description": "读写本地文件，浏览目录结构", "icon": "FolderOpen"},
     {"name": "Shell 执行", "description": "运行 Shell 命令和脚本", "icon": "Terminal"},
     {"name": "GitHub MCP", "description": "通过 MCP 工具集管理 GitHub 数据", "icon": "GitBranch"},
-    {"name": "邮箱", "description": "国内邮箱 QQ/163/126/Outlook（IMAP/SMTP 授权码，可收发）", "icon": "Mail"},
+    {"name": "邮箱", "description": " 支持QQ/163/126/Outlook邮箱收发", "icon": "Mail"},
     {"name": "向量记忆", "description": "ChromaDB 语义检索与上下文压缩", "icon": "Brain"},
     {"name": "个人数据", "description": "待办、笔记、提醒（MySQL 持久化）", "icon": "Database"},
 ]
@@ -189,6 +190,8 @@ def _reminder_dict(r: dict[str, Any]) -> dict[str, Any]:
         "text": r["text"],
         "fireAt": _iso(float(r["when"])),
         "status": "fired" if r["done"] else "pending",
+        "repeatRule": r.get("repeat_rule") or "once",
+        "task": r.get("task") or "",
         "createdAt": _iso(float(r["created_at"])),
     }
 
@@ -198,6 +201,13 @@ def _sse(data: dict[str, Any]) -> str:
 
 
 # ---------- 提醒调度（后台任务，与 CLI 共用同一套 MySQL 原子触发） ----------
+# 已触发提醒的实时事件缓冲（供前端轮询拉取并全屏确认；保留 1 小时）
+_fired_events: list[dict[str, Any]] = []
+_FIRED_KEEP_SECONDS = 3600.0
+# 定时任务执行串行锁（避免多个到点任务并发跑 Agent）
+_task_lock = asyncio.Lock()
+
+
 async def _reminder_loop() -> None:
     while True:
         try:
@@ -209,6 +219,24 @@ async def _reminder_loop() -> None:
             fired = personal.check_reminders()
             for r in fired:
                 logger.info("提醒触发 #%s: %s", r["id"], r["text"])
+                _fired_events.append({
+                    "ts": time.time(),
+                    "id": r["id"],
+                    "text": r["text"],
+                    "when": r.get("when"),
+                })
+                task_text = r.get("task")
+                if task_text:
+                    async with _task_lock:
+                        try:
+                            logger.info("[定时任务] 执行 #%s: %s", r["id"], task_text)
+                            await chat(agent, task_text, memory=memory)
+                            logger.info("[定时任务] 完成 #%s", r["id"])
+                        except Exception as e:  # noqa: BLE001
+                            logger.error("[定时任务] 失败 #%s: %s", r["id"], e)
+            _fired_events[:] = [
+                e for e in _fired_events if e["ts"] > time.time() - _FIRED_KEEP_SECONDS
+            ]
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
@@ -232,6 +260,20 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await agent.__aexit__(None, None, None)
 
 
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+UPLOAD_MAX_BYTES = 20 * 1024 * 1024  # 20MB
+
+# 单次对话处理超时（秒）：超时后向 SSE 下发错误，避免前端无限等待
+CHAT_TIMEOUT = int(os.getenv("CHAT_TIMEOUT", "900"))
+
+# 小文本附件直接注入 prompt，避免 Agent 用 Shell/FileSystem 读取时卡死事件循环
+_TEXT_EXTENSIONS = {
+    ".txt", ".md", ".markdown", ".json", ".csv", ".tsv", ".log",
+    ".py", ".js", ".ts", ".tsx", ".html", ".htm", ".css",
+    ".yaml", ".yml", ".xml", ".ini", ".cfg", ".conf", ".toml",
+}
+_TEXT_INJECT_MAX = 20 * 1024  # 20KB
+
 app = FastAPI(title="Personal Assistant Agent Web API", version=VERSION, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
@@ -239,11 +281,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 # ---------- 会话 ----------
 @app.get("/api/sessions")
 async def list_sessions() -> list[dict[str, Any]]:
+    store.delete_empty_sessions()  # 顺带清理历史遗留的空会话
     return [_session_dict(s) for s in store.list_sessions(limit=100)]
 
 
@@ -257,6 +302,7 @@ async def get_session(sid: str) -> dict[str, Any]:
 
 @app.post("/api/sessions")
 async def create_session() -> dict[str, Any]:
+    store.delete_empty_sessions()  # 旧空会话无保留价值，先清理
     sid = store.create_session()
     _histories[sid] = []
     return _empty_session(sid)
@@ -268,32 +314,109 @@ async def delete_session(sid: str) -> dict[str, bool]:
     return {"ok": store.delete_session(sid)}
 
 
+# ---------- 附件上传 ----------
+@app.post("/api/upload")
+async def upload_file(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+    """上传附件到本地 uploads/，返回绝对路径与访问 URL，供 Agent 读取分析。"""
+    raw_name = os.path.basename(file.filename or "file")
+    safe_name = "".join(c for c in raw_name if c.isalnum() or c in "._- ").strip() or "file"
+    data = await file.read()
+    if len(data) > UPLOAD_MAX_BYTES:
+        raise HTTPException(400, "文件过大（上限 20MB）")
+    if not data:
+        raise HTTPException(400, "空文件")
+    dest = os.path.join(UPLOAD_DIR, f"{uuid.uuid4().hex[:8]}_{safe_name}")
+    with open(dest, "wb") as f:
+        f.write(data)
+    base = str(request.base_url).rstrip("/")
+    return {
+        "name": safe_name,
+        "path": os.path.abspath(dest),
+        "size": len(data),
+        "type": file.content_type or "",
+        "url": f"{base}/uploads/{os.path.basename(dest)}",
+    }
+
+
 # ---------- 对话（SSE 流式） ----------
 class ChatBody(BaseModel):
     content: str
+    attachments: list[dict[str, Any]] = []
 
 
 @app.post("/api/chat/{sid}")
 async def chat_stream(sid: str, body: ChatBody) -> StreamingResponse:
-    if not store.get_session(sid):
-        raise HTTPException(404, "会话不存在")
+    # 会话可能已被空会话清理删除；首次发消息时由 save_messages 自动重建
     message = body.content.strip()
-    if not message:
+    if not message and not body.attachments:
         raise HTTPException(400, "消息不能为空")
     history = _histories.get(sid)
     if history is None:
         history = store.load_messages(sid) or []
     return StreamingResponse(
-        _chat_events(sid, message, history),
+        _chat_events(sid, message, history, body.attachments),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
-async def _chat_events(sid: str, message: str, history: list[Any]) -> AsyncIterator[str]:
+async def _chat_events(
+    sid: str,
+    message: str,
+    history: list[Any],
+    attachments: list[dict[str, Any]] | None = None,
+) -> AsyncIterator[str]:
+    # 小文本附件直接读出内容，避免 Agent 用 Shell/FileSystem 工具读取时卡死
+    def read_text_attachment(a: dict[str, Any]) -> str | None:
+        try:
+            path = a.get("path") or ""
+            if not path or os.path.getsize(path) > _TEXT_INJECT_MAX:
+                return None
+            if os.path.splitext(path)[1].lower() not in _TEXT_EXTENSIONS:
+                return None
+            with open(path, "rb") as f:
+                data = f.read()
+            if b"\x00" in data:
+                return None
+            return data.decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            return None
+
     new_msgs: list[Any] = []
     try:
-        new_msgs = await chat(agent, message, history, memory=memory)
+        prompt = message
+        if attachments:
+            injected: list[str] = []
+            pending: list[str] = []
+            for a in attachments:
+                content = read_text_attachment(a)
+                if content is not None:
+                    injected.append(
+                        f"- {a.get('name', '文件')}：内容如下，直接使用即可：\n```\n{content}\n```"
+                    )
+                else:
+                    pending.append(f"- {a.get('name', '文件')}: {a.get('path', '')}")
+            parts = [message]
+            if injected:
+                parts.append(
+                    "[用户上传了附件，以下文件内容已直接附上，请基于内容回答，"
+                    "无需再调用工具读取：\n" + "\n".join(injected) + "\n]"
+                )
+            if pending:
+                parts.append(
+                    "[用户上传了附件（二进制/大文件，内容未附上），"
+                    "如需使用请用 FileSystem 工具读取：\n" + "\n".join(pending) + "\n]"
+                )
+            prompt = "\n\n".join(parts)
+        new_msgs = await asyncio.wait_for(
+            chat(agent, prompt, history, memory=memory, original_message=message),
+            timeout=CHAT_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        yield _sse(
+            {"type": "error", "message": f"对话处理超时（>{CHAT_TIMEOUT // 60} 分钟），请重试"}
+        )
+        return
     except Exception as e:  # noqa: BLE001
         yield _sse({"type": "error", "message": str(e)})
         return
@@ -460,9 +583,20 @@ async def list_reminders() -> list[dict[str, Any]]:
     return [_reminder_dict(r) for r in personal.list_reminders()]
 
 
+@app.get("/api/reminders/fired")
+async def fired_reminders(after: float = 0.0) -> list[dict[str, Any]]:
+    """返回 after（epoch 秒）之后触发的提醒事件，供前端轮询展示全屏确认。"""
+    _fired_events[:] = [
+        e for e in _fired_events if e["ts"] > time.time() - _FIRED_KEEP_SECONDS
+    ]
+    return [e for e in _fired_events if e["ts"] > after]
+
+
 class ReminderBody(BaseModel):
     text: str
     fireAt: str = ""
+    repeat: str = ""
+    task: str = ""
 
 
 @app.post("/api/reminders")
@@ -477,9 +611,44 @@ async def add_reminder(body: ReminderBody) -> dict[str, Any]:
     else:
         raise HTTPException(400, "触发时间不能为空")
     try:
-        return _reminder_dict(personal.add_reminder(text, when))
+        return _reminder_dict(
+            personal.add_reminder(
+                text, when, repeat_rule=body.repeat or None, task=body.task.strip() or None
+            )
+        )
     except ValueError as e:
-        raise HTTPException(400, "时间解析失败: " + str(e)) from e
+        msg = str(e)
+        if "早于当前时间" in msg:
+            raise HTTPException(400, msg) from e
+        raise HTTPException(400, "时间解析失败: " + msg) from e
+
+
+@app.put("/api/reminders/{rid}")
+async def update_reminder(rid: int, body: ReminderBody) -> dict[str, Any]:
+    """更新提醒（内容 / 时间 / 重复规则 / 定时任务）"""
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(400, "内容不能为空")
+    if not body.fireAt:
+        raise HTTPException(400, "触发时间不能为空")
+    ts = _parse_iso(body.fireAt)
+    when = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+    try:
+        item = personal.update_reminder(
+            rid,
+            text=text,
+            when=when,
+            repeat_rule=body.repeat or None,
+            task=body.task.strip() or None,
+        )
+    except ValueError as e:
+        msg = str(e)
+        if "早于当前时间" in msg:
+            raise HTTPException(400, msg) from e
+        raise HTTPException(400, "时间解析失败: " + msg) from e
+    if item is None:
+        raise HTTPException(404, "提醒不存在")
+    return _reminder_dict(item)
 
 
 @app.delete("/api/reminders/{rid}")
@@ -793,10 +962,39 @@ async def status_endpoint() -> dict[str, Any]:
     }
 
 
+def _start_stack_dumper(interval: float = 120.0) -> None:
+    """后台线程定期转储主线程（asyncio 事件循环）调用栈到 stdout。
+
+    Windows 不支持 faulthandler 定时器；服务一旦卡死（事件循环被同步调用阻塞），
+    日志里仍能看到主线程卡在哪个函数，便于定位问题。可通过
+    STACK_DUMP_INTERVAL=0 关闭。
+    """
+    import sys
+    import threading
+    import traceback
+
+    def dump() -> None:
+        while True:
+            time.sleep(interval)
+            frames = sys._current_frames()  # noqa: SLF001
+            main_id = threading.main_thread().ident
+            lines = [f"===== 线程栈转储 {time.strftime('%H:%M:%S')} ====="]
+            for tid, frame in frames.items():
+                if tid == main_id:
+                    lines.append("--- 主线程（事件循环） ---")
+                    lines.extend(traceback.format_stack(frame))
+            lines.append("===== 转储结束 =====")
+            print("\n".join(lines), flush=True)
+
+    threading.Thread(target=dump, daemon=True).start()
+
+
 if __name__ == "__main__":
     import uvicorn
 
     os.makedirs(LOG_DIR, exist_ok=True)
+    if int(os.getenv("STACK_DUMP_INTERVAL", "120")) > 0:
+        _start_stack_dumper(float(os.getenv("STACK_DUMP_INTERVAL", "120")))
     uvicorn.run(
         app,
         host="127.0.0.1",

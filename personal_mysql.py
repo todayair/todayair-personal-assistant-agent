@@ -18,13 +18,23 @@ seconds_until_next / check_reminders，以及 todos / notes / reminders 属性
     MYSQL_HOST / MYSQL_PORT / MYSQL_USER / MYSQL_PASSWORD / MYSQL_DATABASE
 """
 
+from datetime import datetime
+from typing import Any
 import heapq
 import os
 import time
 
 import pymysql
 
-from personal import DATA_DIR, Item, load_items, parse_time
+from personal import (
+    DATA_DIR,
+    Item,
+    load_items,
+    next_occurrence,
+    parse_reminder_spec,
+    parse_time,
+    resolve_first_occurrence,
+)
 
 # 表名 → 建表 SQL（时间戳用 DOUBLE 秒，兼容 time.time() 语义）
 _TABLES: dict[str, str] = {
@@ -51,6 +61,8 @@ _TABLES: dict[str, str] = {
             text TEXT NOT NULL,
             when_ts DOUBLE NOT NULL,
             is_done TINYINT(1) NOT NULL DEFAULT 0,
+            repeat_rule VARCHAR(32) NOT NULL DEFAULT 'once',
+            task TEXT NULL,
             created_at DOUBLE NOT NULL,
             KEY idx_when_done (when_ts, is_done)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -134,6 +146,7 @@ class MySQLPersonalManager:
                 for ddl in _TABLES.values():
                     cur.execute(ddl)
                 self._ensure_todo_due_column(conn)
+                self._ensure_reminder_columns(conn)
         finally:
             conn.close()
 
@@ -147,6 +160,27 @@ class MySQLPersonalManager:
             )
             if cur.fetchone()[0] == 0:
                 cur.execute("ALTER TABLE todos ADD COLUMN due_ts DOUBLE NULL")
+
+    def _ensure_reminder_columns(self, conn) -> None:
+        """老库兼容：reminders 表补充 repeat_rule / task 列"""
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM information_schema.columns "
+                "WHERE table_schema = DATABASE() AND table_name = 'reminders' "
+                "AND column_name = 'repeat_rule'"
+            )
+            if cur.fetchone()[0] == 0:
+                cur.execute(
+                    "ALTER TABLE reminders ADD COLUMN repeat_rule VARCHAR(32) "
+                    "NOT NULL DEFAULT 'once'"
+                )
+            cur.execute(
+                "SELECT COUNT(*) FROM information_schema.columns "
+                "WHERE table_schema = DATABASE() AND table_name = 'reminders' "
+                "AND column_name = 'task'"
+            )
+            if cur.fetchone()[0] == 0:
+                cur.execute("ALTER TABLE reminders ADD COLUMN task TEXT NULL")
 
     def _maybe_migrate_from_json(self) -> None:
         """首次使用（库中三表皆空）时，把 .agent_personal/ 下的存量数据导入"""
@@ -285,37 +319,123 @@ class MySQLPersonalManager:
         ) > 0
 
     # ---------- 提醒 ----------
-    def add_reminder(self, text: str, when: str) -> Item:
-        ts = parse_time(when)
+    def add_reminder(
+        self, text: str, when: str, repeat_rule: str | None = None, task: str | None = None
+    ) -> Item:
+        """新增提醒。
+
+        repeat_rule: 显式重复规则（web UI 用），如 daily / weekly:1 / monthly:15；
+        为 None 时从 when 的自然语言自动解析（每天 / 每周一 / 工作日 / 每月15号 / 每小时）。
+        task: 定时任务指令，触发后自动交给 Agent 执行。
+        """
+        if repeat_rule:
+            rule, when_expr = repeat_rule, when
+            if rule == "monthly":
+                # UI 选'每月' → 以所选日期的日号作为每月触发日
+                try:
+                    parsed = parse_time(when_expr)
+                    rule = f"monthly:{datetime.fromtimestamp(parsed).day}"
+                except Exception:
+                    pass
+        else:
+            rule, when_expr = parse_reminder_spec(when)
+        ts = resolve_first_occurrence(rule, when_expr)
+        # 校验：提醒时间不能早于当前时间（精确到分钟，当前分钟内允许）
+        if int(ts // 60) < int(time.time() // 60):
+            raise ValueError("提醒时间不能早于当前时间（精确到分钟）")
         created = time.time()
         conn = self._connect()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO reminders (text, when_ts, is_done, created_at) "
-                    "VALUES (%s, %s, 0, %s)",
-                    (text, ts, created),
+                    "INSERT INTO reminders (text, when_ts, is_done, repeat_rule, task, created_at) "
+                    "VALUES (%s, %s, 0, %s, %s, %s)",
+                    (text, ts, rule, task or None, created),
                 )
                 rid = cur.lastrowid
         finally:
             conn.close()
-        reminder = {"id": rid, "text": text, "when": ts, "done": False, "created_at": created}
+        reminder = {
+            "id": rid, "text": text, "when": ts, "done": False,
+            "repeat_rule": rule, "task": task or None, "created_at": created,
+        }
         heapq.heappush(self._heap, (ts, rid))
         return reminder
 
     def list_reminders(self, only_pending: bool = False) -> list[Item]:
         sql = (
-            "SELECT id, text, when_ts, is_done, created_at FROM reminders"
+            "SELECT id, text, when_ts, is_done, created_at, repeat_rule, task FROM reminders"
             + (" WHERE is_done = 0" if only_pending else "")
             + " ORDER BY when_ts ASC"
         )
         return [
-            {"id": r[0], "text": r[1], "when": r[2], "done": bool(r[3]), "created_at": r[4]}
+            {
+                "id": r[0], "text": r[1], "when": r[2], "done": bool(r[3]),
+                "created_at": r[4], "repeat_rule": r[5], "task": r[6],
+            }
             for r in self._fetch(sql)
         ]
 
     def delete_reminder(self, reminder_id: int) -> bool:
         return self._execute("DELETE FROM reminders WHERE id = %s", (reminder_id,)) > 0
+
+    def _fetch_reminder(self, reminder_id: int) -> Item | None:
+        rows = self._fetch(
+            "SELECT id, text, when_ts, is_done, created_at, repeat_rule, task "
+            "FROM reminders WHERE id = %s",
+            (reminder_id,),
+        )
+        if not rows:
+            return None
+        r = rows[0]
+        return {
+            "id": r[0], "text": r[1], "when": r[2], "done": bool(r[3]),
+            "created_at": r[4], "repeat_rule": r[5], "task": r[6],
+        }
+
+    def _get_reminder_rule(self, reminder_id: int) -> str:
+        rows = self._fetch("SELECT repeat_rule FROM reminders WHERE id = %s", (reminder_id,))
+        return rows[0][0] if rows and rows[0][0] else "once"
+
+    def update_reminder(
+        self,
+        reminder_id: int,
+        text: str | None = None,
+        when: str | None = None,
+        repeat_rule: str | None = None,
+        task: str | None = None,
+    ) -> Item | None:
+        """更新提醒（text / when / repeat_rule / task；None 表示不修改）。
+
+        修改时间时按重复规则重新计算首次触发，并重新激活（is_done=0）。
+        """
+        sets: list[str] = []
+        args: list[Any] = []
+        if text is not None:
+            sets.append("text = %s")
+            args.append(text)
+        if when is not None:
+            rule = repeat_rule or self._get_reminder_rule(reminder_id)
+            ts = resolve_first_occurrence(rule, when)
+            if int(ts // 60) < int(time.time() // 60):
+                raise ValueError("提醒时间不能早于当前时间（精确到分钟）")
+            sets.append("when_ts = %s")
+            args.append(ts)
+            sets.append("is_done = 0")  # 修改时间后重新激活
+        if repeat_rule is not None:
+            sets.append("repeat_rule = %s")
+            args.append(repeat_rule)
+        if task is not None:
+            sets.append("task = %s")
+            args.append(task or None)
+        if not sets:
+            return self._fetch_reminder(reminder_id)
+        args.append(reminder_id)
+        self._execute(
+            f"UPDATE reminders SET {', '.join(sets)} WHERE id = %s", tuple(args)
+        )
+        self._reload_heap()
+        return self._fetch_reminder(reminder_id)
 
     # ---------- 调度：最小堆 + 原子触发 ----------
     def _reload_heap(self) -> None:
@@ -339,7 +459,7 @@ class MySQLPersonalManager:
                 if cur.rowcount == 0:
                     return None
                 cur.execute(
-                    "SELECT id, text, when_ts, is_done, created_at "
+                    "SELECT id, text, when_ts, is_done, created_at, repeat_rule, task "
                     "FROM reminders WHERE id = %s",
                     (reminder_id,),
                 )
@@ -351,6 +471,7 @@ class MySQLPersonalManager:
         return {
             "id": row[0], "text": row[1], "when": row[2],
             "done": bool(row[3]), "created_at": row[4],
+            "repeat_rule": row[5], "task": row[6],
         }
 
     def seconds_until_next(self) -> float | None:
@@ -378,6 +499,7 @@ class MySQLPersonalManager:
             _, rid = heapq.heappop(self._heap)
             r = self._claim(rid)
             if r is not None:
+                self._maybe_reschedule(r)
                 fired.append(r)
         # 2) 兜底：数据库里仍有到期未触发的（如其他进程新增的提醒）→ 原子触发
         rows = self._fetch(
@@ -387,8 +509,26 @@ class MySQLPersonalManager:
         for (rid,) in rows:
             r = self._claim(rid)
             if r is not None:
+                self._maybe_reschedule(r)
                 fired.append(r)
         return fired
+
+    def _maybe_reschedule(self, r: Item) -> None:
+        """重复提醒触发后自动排下一次；一次性提醒保持已触发状态。"""
+        rule = r.get("repeat_rule") or "once"
+        if rule == "once":
+            return
+        nxt = next_occurrence(rule, float(r["when"]), float(r["when"]))
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE reminders SET when_ts = %s, is_done = 0 WHERE id = %s",
+                    (nxt, r["id"]),
+                )
+        finally:
+            conn.close()
+        heapq.heappush(self._heap, (nxt, r["id"]))
 
     # ---------- 只读属性（兼容 gradio_ui 的 len(personal.todos) 用法） ----------
     @property

@@ -129,7 +129,7 @@ function SkeletonStatCard() {
 export default function StatusPage() {
   const [status, setStatus] = useState<AgentStatus | null>(null)
   const [loading, setLoading] = useState(true)
-  const [lastRefreshed, setLastRefreshed] = useState<Date>(new Date())
+  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
 
@@ -162,7 +162,10 @@ export default function StatusPage() {
         </div>
         <div className="flex items-center gap-3">
           <span className="text-[11px] text-muted-foreground">
-            上次刷新：{lastRefreshed.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            上次刷新：
+            {lastRefreshed
+              ? lastRefreshed.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+              : '--:--:--'}
           </span>
           <button
             onClick={loadStatus}

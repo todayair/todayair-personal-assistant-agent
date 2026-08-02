@@ -16,7 +16,7 @@ import {
   Square,
   Trash2,
 } from 'lucide-react'
-import { remindersApi, todosApi, type Reminder, type Todo } from '@/services/api'
+import { remindersApi, todosApi, REPEAT_OPTIONS, repeatLabel, type Reminder, type Todo } from '@/services/api'
 import { cn } from '@/lib/utils'
 
 // ── 日期工具（本地时区）──
@@ -132,6 +132,13 @@ export default function CalendarPage() {
   const [todoInput, setTodoInput] = useState('')
   const [remindInput, setRemindInput] = useState('')
   const [remindTime, setRemindTime] = useState('09:00')
+  const [remindMode, setRemindMode] = useState<'once' | 'repeat'>('once')
+  const [remindRule, setRemindRule] = useState('daily')
+  const [remindWeekday, setRemindWeekday] = useState(1)
+  const [remindWeekdayEnd, setRemindWeekdayEnd] = useState(1)
+  const [remindMonthDay, setRemindMonthDay] = useState(1)
+  const [remindMonthDayEnd, setRemindMonthDayEnd] = useState(1)
+  const [remindTask, setRemindTask] = useState('')
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -266,13 +273,39 @@ export default function CalendarPage() {
   const addReminder = async () => {
     const text = remindInput.trim()
     if (!text || !selected || !remindTime || busy) return
+    if (remindRule === 'monthly' && remindMonthDay > remindMonthDayEnd) {
+      setError('每月起始日不能晚于结束日')
+      return
+    }
+    const remindRepeat =
+      remindMode === 'once'
+        ? 'once'
+        : remindRule === 'weekly'
+          ? remindWeekday === remindWeekdayEnd
+            ? `weekly:${remindWeekday}`
+            : `weekly:${remindWeekday}-${remindWeekdayEnd}`
+          : remindRule === 'monthly'
+            ? remindMonthDay === remindMonthDayEnd
+              ? `monthly:${remindMonthDay}`
+              : `monthly:${remindMonthDay}-${remindMonthDayEnd}`
+            : remindRule
+    // 一次提醒：时间不能早于当前（分钟精度）；重复提醒：过去时间自动顺延到下一次
+    const fireTs = new Date(`${selected}T${remindTime}`).getTime()
+    if (
+      remindMode === 'once' &&
+      Math.floor(fireTs / 60000) < Math.floor(Date.now() / 60000)
+    ) {
+      setError('提醒时间不能早于当前时间（精确到分钟）')
+      return
+    }
     setBusy(true)
     setError('')
     try {
       const local = `${selected}T${remindTime}`
-      const r = await remindersApi.create(text, new Date(local).toISOString())
+      const r = await remindersApi.create(text, new Date(local).toISOString(), remindRepeat, remindTask.trim())
       setReminders((prev) => [...prev, r])
       setRemindInput('')
+      setRemindTask('')
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -442,6 +475,110 @@ export default function CalendarPage() {
                     提醒
                   </button>
                 </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex overflow-hidden rounded-lg border border-border p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setRemindMode('once')}
+                      className={cn(
+                        'rounded-md px-3 py-1.5 text-xs font-medium transition-all',
+                        remindMode === 'once'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'text-muted-foreground hover:text-foreground',
+                      )}
+                    >
+                      一次
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRemindMode('repeat')}
+                      className={cn(
+                        'rounded-md px-3 py-1.5 text-xs font-medium transition-all',
+                        remindMode === 'repeat'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'text-muted-foreground hover:text-foreground',
+                      )}
+                    >
+                      重复
+                    </button>
+                  </div>
+                  {remindMode === 'repeat' && (
+                    <select
+                      value={remindRule}
+                      onChange={(e) => setRemindRule(e.target.value)}
+                      className="rounded-lg border border-border bg-background px-2 py-2 text-xs text-foreground focus:border-primary/60 focus:outline-none focus:ring-1 focus:ring-primary/20 transition-all"
+                    >
+                      {REPEAT_OPTIONS.filter((o) => o.value !== 'once').map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {remindMode === 'repeat' && remindRule === 'weekly' && (
+                    <>
+                      <select
+                        value={remindWeekday}
+                        onChange={(e) => setRemindWeekday(Number(e.target.value))}
+                        title="起始星期"
+                        className="rounded-lg border border-border bg-background px-2 py-2 text-xs text-foreground focus:border-primary/60 focus:outline-none focus:ring-1 focus:ring-primary/20 transition-all"
+                      >
+                        {['周一', '周二', '周三', '周四', '周五', '周六', '周日'].map((w, i) => (
+                          <option key={i + 1} value={i + 1}>
+                            {w}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={remindWeekdayEnd}
+                        onChange={(e) => setRemindWeekdayEnd(Number(e.target.value))}
+                        title="结束星期"
+                        className="rounded-lg border border-border bg-background px-2 py-2 text-xs text-foreground focus:border-primary/60 focus:outline-none focus:ring-1 focus:ring-primary/20 transition-all"
+                      >
+                        {['周一', '周二', '周三', '周四', '周五', '周六', '周日'].map((w, i) => (
+                          <option key={i + 1} value={i + 1}>
+                            {w}
+                          </option>
+                        ))}
+                      </select>
+                    </>
+                  )}
+                  {remindMode === 'repeat' && remindRule === 'monthly' && (
+                    <>
+                      <select
+                        value={remindMonthDay}
+                        onChange={(e) => setRemindMonthDay(Number(e.target.value))}
+                        title="起始日"
+                        className="rounded-lg border border-border bg-background px-2 py-2 text-xs text-foreground focus:border-primary/60 focus:outline-none focus:ring-1 focus:ring-primary/20 transition-all"
+                      >
+                        {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                          <option key={d} value={d}>
+                            {d}日起
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={remindMonthDayEnd}
+                        onChange={(e) => setRemindMonthDayEnd(Number(e.target.value))}
+                        title="结束日"
+                        className="rounded-lg border border-border bg-background px-2 py-2 text-xs text-foreground focus:border-primary/60 focus:outline-none focus:ring-1 focus:ring-primary/20 transition-all"
+                      >
+                        {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                          <option key={d} value={d}>
+                            {d}日止
+                          </option>
+                        ))}
+                      </select>
+                    </>
+                  )}
+                  <input
+                    type="text"
+                    value={remindTask}
+                    onChange={(e) => setRemindTask(e.target.value)}
+                    placeholder="定时任务（可选，到点自动执行）"
+                    className="flex-1 min-w-[160px] rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary/60 focus:outline-none focus:ring-1 focus:ring-primary/20 transition-all"
+                  />
+                </div>
               </div>
             </div>
 
@@ -532,10 +669,18 @@ export default function CalendarPage() {
                         )}
                       >
                         {r.text}
+                        {r.task && (
+                          <span className="ml-2 text-xs text-muted-foreground">（任务: {r.task}）</span>
+                        )}
                       </span>
                       <span className="whitespace-nowrap text-[11px] text-muted-foreground">
                         {timeText(r.fireAt)}
                       </span>
+                      {r.repeatRule && r.repeatRule !== 'once' && (
+                        <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                          {repeatLabel(r.repeatRule)}
+                        </span>
+                      )}
                       {r.status === 'fired' && (
                         <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                           已触发

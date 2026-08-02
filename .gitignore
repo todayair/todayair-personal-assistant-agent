@@ -37,6 +37,10 @@ scratch/
 # ===== GAIA 评测报告（生成产物）=====
 gaia_eval/results/
 
+# ===== 聊天附件上传 =====
+uploads/
+gaia_eval/.attachments/
+
 # ===== 浏览器调试 / 无障碍快照 =====
 ui.yaml
 .playwright-cli/

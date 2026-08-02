@@ -10,9 +10,11 @@
   数据一次性迁移时复用的类型与读取函数
 """
 
+import calendar
 import json
 import os
 import re
+import time
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -129,6 +131,140 @@ def parse_time(s: str) -> float:
     raise ValueError(
         f"无法解析时间: {s!r}，请用 '15:00'、'明天 9:00'、'30分钟后'、'3点'、'下午3点'、'3点一刻'、'2026-07-31 15:00' 等格式"
     )
+
+
+# ======================================================================
+# 重复提醒 / 定时任务规则
+# ======================================================================
+
+# 规则: once / hourly / daily / weekday / weekly / weekly:N(1=周一..7=周日) / monthly:N(N=日)
+WEEKDAY_CN = '一二三四五六日天'
+
+
+def parse_reminder_spec(s: str) -> tuple[str, str]:
+    """把自然语言提醒拆成 (repeat_rule, 时间表达式)。
+
+    例如 '每天9点' → ("daily", "9点")；'每周一14:00' → ("weekly:1", "14:00")；
+    '工作日9:30' → ("weekday", "9:30")；'每月15号9点' → ("monthly:15", "9点")；
+    '每小时' → ("hourly", "1小时后")；其余 → ("once", 原文)。
+    """
+    s = (s or "").strip()
+    if not s:
+        return "once", ""
+    # 每小时
+    if s == "每小时":
+        return "hourly", "1小时后"
+    # 工作日
+    m = re.match(r"^(每个?工作日|工作日)(.*)$", s)
+    if m:
+        return "weekday", (m.group(2).strip() or "9:00")
+    # 每天 / 每日
+    m = re.match(r"^(每天|每日)(.*)$", s)
+    if m:
+        return "daily", (m.group(2).strip() or "9:00")
+    # 每周X到Y / 每周X至Y（时间段，如 每周一到周三）
+    m = re.match(r"^每周([一二三四五六日天])(?:到|至)([一二三四五六日天])(.*)$", s)
+    if m:
+        d1 = WEEKDAY_CN.index(m.group(1)) + 1  # 1=周一 ... 7=周日
+        d2 = WEEKDAY_CN.index(m.group(2)) + 1
+        return f"weekly:{d1}-{d2}", (m.group(3).strip() or "9:00")
+    # 每周X（X=一..日）
+    m = re.match(r"^每周([一二三四五六日天])(.*)$", s)
+    if m:
+        day = WEEKDAY_CN.index(m.group(1)) + 1  # 1=周一 ... 7=周日
+        return f"weekly:{day}", (m.group(2).strip() or "9:00")
+    # 每周（不指定星期 → 从设定日期起每周）
+    m = re.match(r"^每周(.*)$", s)
+    if m:
+        return "weekly", (m.group(1).strip() or "9:00")
+    # 每月A号到B号 / 每月A日至B日（时间段，如 每月1号到15号）
+    m = re.match(r"^每月(\d{1,2})[号日]?(?:到|至)(\d{1,2})[号日]?(.*)$", s)
+    if m:
+        return f"monthly:{int(m.group(1))}-{int(m.group(2))}", (m.group(3).strip() or "9:00")
+    # 每月N号 / 每月N日
+    m = re.match(r"^每月(\d{1,2})[号日]?(.*)$", s)
+    if m:
+        return f"monthly:{int(m.group(1))}", (m.group(2).strip() or "9:00")
+    return "once", s
+
+
+def next_occurrence(rule: str, base_ts: float, after_ts: float) -> float:
+    """计算 rule 规则下，严格晚于 after_ts 的下一次触发时间戳。
+
+    base_ts 提供基准（时:分 / 星期 / 每月日）。
+    """
+    if rule in ("", "once"):
+        return base_ts
+    base = datetime.fromtimestamp(base_ts)
+    after = datetime.fromtimestamp(after_ts)
+
+    if rule == "hourly":
+        nxt = base.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        while nxt <= after:
+            nxt += timedelta(hours=1)
+        return nxt.timestamp()
+
+    if rule == "daily":
+        nxt = base.replace(second=0, microsecond=0)
+        while nxt <= after:
+            nxt += timedelta(days=1)
+        return nxt.timestamp()
+
+    if rule == "weekday":
+        nxt = base.replace(second=0, microsecond=0)
+        while nxt <= after or nxt.weekday() >= 5:  # 5=周六 6=周日
+            nxt += timedelta(days=1)
+        return nxt.timestamp()
+
+    if rule == "weekly":
+        nxt = base.replace(second=0, microsecond=0)
+        while nxt <= after:
+            nxt += timedelta(days=7)
+        return nxt.timestamp()
+
+    if rule.startswith("weekly:"):
+        parts = rule.split(":", 1)[1].split("-")
+        s = int(parts[0]) - 1  # 1=周一 → Python weekday 0
+        e = int(parts[1]) - 1 if len(parts) > 1 else s
+        span = (e - s) % 7 + 1  # 支持跨周（如 周五~周一）
+        target = {(s + i) % 7 for i in range(span)}
+        nxt = base.replace(second=0, microsecond=0)
+        while nxt <= after or nxt.weekday() not in target:
+            nxt += timedelta(days=1)
+        return nxt.timestamp()
+
+    if rule.startswith("monthly:"):
+        parts = rule.split(":", 1)[1].split("-")
+        d1, d2 = int(parts[0]), int(parts[1]) if len(parts) > 1 else int(parts[0])
+        if d1 > d2:
+            d1, d2 = d2, d1  # 起始晚于结束 → 交换处理
+        nxt = base.replace(second=0, microsecond=0)
+        while True:
+            last = calendar.monthrange(nxt.year, nxt.month)[1]
+            for d in range(d1, min(d2, last) + 1):
+                cand = datetime(nxt.year, nxt.month, d, nxt.hour, nxt.minute)
+                if cand > after:
+                    return cand.timestamp()
+            nxt = (datetime(nxt.year, nxt.month, 28) + timedelta(days=4)).replace(
+                day=1, hour=nxt.hour, minute=nxt.minute
+            )
+
+    return base_ts
+
+
+def resolve_first_occurrence(rule: str, when_expr: str) -> float:
+    """计算重复规则下的第一次触发时间（严格晚于当前）。"""
+    now = time.time()
+    if rule in ("", "once"):
+        return parse_time(when_expr) if when_expr.strip() else now
+    if rule == "hourly":
+        return next_occurrence("hourly", now, now)
+    parsed = parse_time(when_expr) if when_expr.strip() else None
+    if parsed is not None:
+        base = datetime.fromtimestamp(parsed).replace(second=0, microsecond=0).timestamp()
+    else:
+        base = datetime.now().replace(hour=9, minute=0, second=0, microsecond=0).timestamp()
+    return next_occurrence(rule, base, now)
 
 
 def extract_time(s: str) -> tuple[str, float | None]:

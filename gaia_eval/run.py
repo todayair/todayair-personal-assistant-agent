@@ -8,7 +8,11 @@ GAIA 基准评测 — CLI 入口
     python -m gaia_eval.run --gaia --gaia-levels 1              # 仅 Level 1
     python -m gaia_eval.run --gaia --gaia-max 10                # 仅 10 题尝鲜
     python -m gaia_eval.run --gaia --gaia-no-attach             # 跳过附件题
+    python -m gaia_eval.run --gaia --gaia-timeout 420      # 单题超时秒数（默认 420）
     python -m gaia_eval.run --gaia --dry-run                    # 预览题数消耗
+
+评测结束后自动清理过程中下载/生成的临时文件（附件缓存、工作目录等），
+results/ 下的 JSON 报告会保留。
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import shutil
 import sys
 import time
 
@@ -91,7 +96,7 @@ def build_agent(gaia_mode: bool = False):
     agent = Agent(  # pyright: ignore[reportCallIssue]
         model=MODEL,
         system_prompt=system_prompt,
-        model_settings={'max_retries': 2, 'timeout': 60},  # pyright: ignore[reportArgumentType]
+        model_settings={'max_retries': 2, 'timeout': 180},  # pyright: ignore[reportArgumentType]
         capabilities=[
             WebSearch(local=True),
             FileSystem(),
@@ -113,6 +118,37 @@ def build_agent(gaia_mode: bool = False):
     return agent
 
 
+def cleanup_gaia_artifacts() -> None:
+    """清理本次 GAIA 评测产生的临时文件（保留 results/ 下的 JSON 报告）
+
+    清理范围:
+      - gaia_eval/.attachments/   附件下载缓存（每次评测都会重新下载）
+      - gaia_eval/__pycache__/    Python 字节码缓存
+      - scratch/gaia_work/        Agent 工作目录（脚本/下载/生成文件）
+    """
+    gaia_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(gaia_dir)
+    targets = [
+        os.path.join(gaia_dir, ".attachments"),
+        os.path.join(gaia_dir, "__pycache__"),
+        os.path.join(project_root, "scratch", "gaia_work"),
+    ]
+    cleaned = False
+    for t in targets:
+        if os.path.isdir(t):
+            shutil.rmtree(t, ignore_errors=True)
+            if not os.path.exists(t):
+                print(f"  已清理: {t}", flush=True)
+                cleaned = True
+    # 若 scratch 目录因此变空，一并删除
+    scratch_dir = os.path.join(project_root, "scratch")
+    if os.path.isdir(scratch_dir) and not os.listdir(scratch_dir):
+        os.rmdir(scratch_dir)
+        print(f"  已清理: {scratch_dir}", flush=True)
+    if cleaned:
+        print("  临时文件清理完成", flush=True)
+
+
 # ── CLI ────────────────────────────────────────────────────
 
 def build_parser():
@@ -128,6 +164,8 @@ def build_parser():
                         help="GAIA 最大题数")
     parser.add_argument("--gaia-no-attach", action="store_true",
                         help="GAIA 跳过带附件的题目")
+    parser.add_argument("--gaia-timeout", type=float, default=420.0,
+                        help="GAIA 单题超时秒数（默认 420）")
     return parser
 
 
@@ -146,6 +184,7 @@ def gaia_dry_run(args):
         levels=args.gaia_levels,
         max_questions=args.gaia_max,
         skip_attachments=args.gaia_no_attach,
+        download_attachments=False,
     )
     if not questions:
         return
@@ -181,32 +220,46 @@ async def main():
 
     # ── GAIA 模式 ──
     if args.gaia:
-        questions = load_gaia_dataset(
-            levels=args.gaia_levels,
-            max_questions=args.gaia_max,
-            skip_attachments=args.gaia_no_attach,
-        )
-        if not questions:
-            return
+        try:
+            questions = load_gaia_dataset(
+                levels=args.gaia_levels,
+                max_questions=args.gaia_max,
+                skip_attachments=args.gaia_no_attach,
+            )
+            if not questions:
+                return
 
-        print(f"\n  >> 开始 GAIA 基准评测")
-        print(f"  模型: {MODEL}")
-        print(f"  题数: {len(questions)}  ({sum(1 for q in questions if q.file_name)} 带附件)")
-        print(f"  {'-' * 48}")
+            print(f"\n  >> 开始 GAIA 基准评测")
+            print(f"  模型: {MODEL}")
+            print(f"  题数: {len(questions)}  ({sum(1 for q in questions if q.file_name)} 带附件)")
+            print(f"  {'-' * 48}")
 
-        agent = build_agent(gaia_mode=True)
-        t0 = time.time()
+            # Agent 的 Shell/文件工具会在进程工作目录写文件；
+            # 切换到独立工作目录，避免残留文件污染项目根目录
+            work_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "scratch", "gaia_work",
+            )
+            os.makedirs(work_dir, exist_ok=True)
+            os.chdir(work_dir)
+            print(f"  工作目录: {work_dir}", flush=True)
 
-        async with agent:
-            report = await run_gaia(agent, questions)
+            agent = build_agent(gaia_mode=True)
+            t0 = time.time()
 
-        elapsed = time.time() - t0
+            async with agent:
+                report = await run_gaia(agent, questions, timeout_per_question=args.gaia_timeout)
 
-        report.print()
-        print(f"总耗时: {elapsed:.1f}s")
-        print()
+            elapsed = time.time() - t0
 
-        save_gaia_report(report)
+            report.print()
+            print(f"总耗时: {elapsed:.1f}s")
+            print()
+
+            save_gaia_report(report)
+        finally:
+            # 无论正常结束还是被中断，都清理本次评测产生的临时文件
+            cleanup_gaia_artifacts()
         return
 
     parser.print_help()

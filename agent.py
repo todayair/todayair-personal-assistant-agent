@@ -43,7 +43,12 @@ from memory import get_memory
 from personal import format_fired_reminder, format_time
 from personal_mysql import MySQLPersonalManager
 from storage import create_personal_manager, create_session_store
-from history import format_session_row, messages_to_display
+from history import (
+    ModelRequest,
+    UserPromptPart,
+    format_session_row,
+    messages_to_display,
+)
 from pydantic_ai_harness.compaction import (
     ClearToolResults,
     SummarizingCompaction,
@@ -88,7 +93,7 @@ agent = Agent[None](  # pyright: ignore[reportCallIssue]
     model=MODEL,
     system_prompt=SYSTEM_PROMPT,
     deps_type=type(None),  # 显式匹配泛型参数，消除 reportArgumentType
-    model_settings={'max_retries': 2, 'timeout': 60},  # pyright: ignore[reportArgumentType]
+    model_settings={'max_retries': 2, 'timeout': 180},  # pyright: ignore[reportArgumentType]
     capabilities=[
         WebSearch(local=True),
         FileSystem(),
@@ -117,6 +122,8 @@ personal = create_personal_manager()
 
 # 提醒调度唤醒事件：新增提醒时 set，让后台调度循环立即按新堆顶重算休眠时间
 wake_event = asyncio.Event()
+# 定时任务执行串行锁（避免多个到点任务并发跑 Agent）
+reminder_task_lock = asyncio.Lock()
 
 
 # ---------- 个人效率工具（LLM 可调用） ----------
@@ -197,14 +204,23 @@ def delete_note(note_id: int) -> str:
 
 @agent.tool_plain
 def add_reminder(text: str = "提醒", when: str = "") -> str:
-    """设置一条提醒。when 支持自然语言：'15:00'、'明天 9:00'、'3点'、'下午3点'、'3点一刻'、'30分钟后'、'2026-07-31 15:00'、'明天'（仅日期→当天9:00）。例：text='开会', when='15:00'
+    """设置一条提醒。when 支持自然语言：'15:00'、'明天 9:00'、'3点'、'下午3点'、'3点一刻'、'30分钟后'、'2026-07-31 15:00'、'明天'（仅日期→当天9:00）。
+    支持重复提醒：'每天9点'、'每周一14:00'、'工作日9:30'、'每月15号9点'、'每小时'。例：text='开会', when='15:00'
     只在缺失必要信息时才询问，其余情况直接调用本工具：
     - text（内容）：用户没给具体内容（如"提醒我1分钟后"）时，不要停下来询问，直接省略该参数（使用默认内容"提醒"），或按语境用一个简短内容代替。
-    - when（时间）：优先从用户的话里解析（"1分钟后""明天9点""3点一刻"等）。只有当用户完全没给时间、也无法从语境推断（如只说"提醒我"）时，才用一句话询问希望什么时候提醒，等用户给出时间后再调用本工具；绝不猜测或编造时间，也不向用户报错。"""
+    - when（时间）：优先从用户的话里解析（"1分钟后""明天9点""3点一刻"等）。只有当用户完全没给时间、也无法从语境推断（如只说"提醒我"）时，才用一句话询问希望什么时候提醒，等用户给出时间后再调用本工具；绝不猜测或编造时间，也不向用户报错。并且如果用户给出了时间请判断这个时间是否早于当前时间。"""
     try:
         r = personal.add_reminder(text, when)
         wake_event.set()  # 立即唤醒调度循环，新提醒无需等待下一个休眠周期
     except ValueError as e:
+        if "早于当前时间" in str(e):
+            # 时间在过去 → 引导 LLM 请用户改一个未来的时间
+            return (
+                "用户给出的提醒时间早于当前时间，不能设置。"
+                "请不要向用户报告技术细节，而是用自然语言告知：提醒时间不能早于现在，"
+                "并请用户重新给出一个未来的具体时间（可提示 15:00、明天 9:00、30分钟后 等写法），"
+                "等用户给出时间后再重新调用 add_reminder。"
+            )
         # 解析失败 → 返回引导指令，让 LLM 转而询问用户补充时间，而不是直接报错
         return (
             f"时间解析失败: {e}。"
@@ -234,18 +250,27 @@ def delete_reminder(reminder_id: int) -> str:
 
 
 # ---------- 对话逻辑 ----------
-async def chat(agent_ctx, message: str, history=None, memory=None) -> list:  # pyright: ignore[reportMissingTypeArgument]
+async def chat(
+    agent_ctx,
+    message: str,
+    history=None,
+    memory=None,
+    original_message: str | None = None,
+) -> list:  # pyright: ignore[reportMissingTypeArgument]
     """在 agent 上下文内发送消息并输出回复
 
     Args:
         memory: 外部记忆系统实例，启用时自动检索相似记忆并注入上下文
+        original_message: 用户原始输入（不带记忆/附件注入）。Web 端传入，
+            未传入时回退到本函数收到的 message 参数（CLI 场景即原始输入）。
     """
     # 保存原始用户输入用于后续记忆判断（避免增强后消息干扰）
     raw_question = message
+    restore_to = original_message if original_message is not None else message
 
-    # 外部记忆检索：在用户消息前注入相关历史
+    # 外部记忆检索：在用户消息前注入相关历史（耗时操作放线程，避免阻塞事件循环）
     if memory and memory.enabled:
-        memories = memory.search(message)
+        memories = await asyncio.to_thread(memory.search, message)
         context = memory.format_context(memories)
         if context:
             message = context + message
@@ -255,9 +280,22 @@ async def chat(agent_ctx, message: str, history=None, memory=None) -> list:  # p
 
     # 存储本轮问答到记忆（用原始问题判断，不是增强后的）
     if memory and memory.enabled:
-        memory.add(raw_question, result.output)
+        await asyncio.to_thread(memory.add, raw_question, result.output)
 
-    return result.new_messages()
+    new_msgs = result.new_messages()
+    # 还原用户消息为原始输入：记忆/附件注入只属于本轮上下文，不写入历史，
+    # 否则重新打开会话会看到"长期记忆""附件内容"等杂乱前缀
+    for m in new_msgs:
+        if isinstance(m, ModelRequest):
+            for p in m.parts:
+                if isinstance(p, UserPromptPart):
+                    try:
+                        p.content = restore_to
+                    except Exception:  # noqa: BLE001  # 个别版本字段只读时保持原样
+                        pass
+                    break
+            break
+    return new_msgs
 
 
 # ---------- CLI ----------
@@ -314,6 +352,15 @@ async def main():
                 print("═" * 40)
                 print(format_fired_reminder(r))
                 print("═" * 40, flush=True)
+                task_text = r.get("task")
+                if task_text:
+                    async with reminder_task_lock:
+                        try:
+                            print(f"[定时任务] 执行: {task_text}", flush=True)
+                            await chat(agent, task_text, memory=memory)
+                            print("[定时任务] 已完成", flush=True)
+                        except Exception as e:  # noqa: BLE001
+                            print(f"[定时任务] 失败: {e}", flush=True)
 
     # 在 agent 生命周期上下文中运行整个对话，确保 MCP 连接持续可用
     async with agent:

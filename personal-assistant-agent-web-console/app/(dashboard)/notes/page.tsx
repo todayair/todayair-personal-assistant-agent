@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { Plus, Trash2, FileText, Loader2, Save, Clock, StickyNote } from 'lucide-react'
 import { notesApi, type Note } from '@/services/api'
+import ConfirmDialog from '@/components/confirm-dialog'
 import { cn } from '@/lib/utils'
 
 function formatDate(iso: string) {
@@ -31,6 +32,7 @@ export default function NotesPage() {
   const [saving, setSaving] = useState(false)
   const [deletingIds, setDeletingIds] = useState<Set<number>>(new Set())
   const [error, setError] = useState('')
+  const [confirmNote, setConfirmNote] = useState<Note | null>(null)
 
   useEffect(() => {
     notesApi
@@ -59,7 +61,7 @@ export default function NotesPage() {
 
   const handleSave = async () => {
     const title = editTitle.trim()
-    const content = editContent.trim()
+    const content = editContent.trim().slice(0, 1000)
     if (!title || saving) return
 
     setSaving(true)
@@ -81,8 +83,7 @@ export default function NotesPage() {
     }
   }
 
-  const handleDelete = async (id: number, e: React.MouseEvent) => {
-    e.stopPropagation()
+  const doDelete = async (id: number) => {
     setDeletingIds((s) => new Set(s).add(id))
     setError('')
     try {
@@ -165,12 +166,18 @@ export default function NotesPage() {
           </div>
 
           {/* Content textarea */}
-          <textarea
-            value={editContent}
-            onChange={(e) => setEditContent(e.target.value)}
-            placeholder={'在此输入笔记内容…\n\n支持纯文本，使用换行和空格组织结构。'}
-            className="flex-1 resize-none bg-gradient-to-b from-background to-muted/10 px-5 py-4 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none"
-          />
+          <div className="relative flex-1">
+            <textarea
+              value={editContent}
+              onChange={(e) => setEditContent(e.target.value)}
+              placeholder={'在此输入笔记内容…\n\n支持纯文本，使用换行和空格组织结构。'}
+              maxLength={1000}
+              className="h-full w-full resize-none bg-gradient-to-b from-background to-muted/10 px-5 py-4 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none"
+            />
+            <span className="pointer-events-none absolute bottom-2 right-3 text-[11px] tabular-nums text-muted-foreground/70">
+              {editContent.length}/1000
+            </span>
+          </div>
 
           {/* Footer */}
           {selectedNote && (
@@ -223,7 +230,10 @@ export default function NotesPage() {
                     isDeleting={deletingIds.has(note.id)}
                     className={cn('fade-in-up', staggerClass)}
                     onClick={() => handleSelectNote(note)}
-                    onDelete={(e) => handleDelete(note.id, e)}
+                    onDelete={(e) => {
+                      e.stopPropagation()
+                      setConfirmNote(note)
+                    }}
                   />
                 )
               })}
@@ -231,6 +241,18 @@ export default function NotesPage() {
           )}
         </div>
       </div>
+      <ConfirmDialog
+        open={confirmNote !== null}
+        title="删除笔记"
+        description={confirmNote ? `确定删除「${confirmNote.title}」吗？此操作不可恢复。` : ''}
+        onCancel={() => setConfirmNote(null)}
+        onConfirm={() => {
+          if (confirmNote) {
+            doDelete(confirmNote.id)
+            setConfirmNote(null)
+          }
+        }}
+      />
     </div>
   )
 }

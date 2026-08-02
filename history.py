@@ -70,6 +70,64 @@ def _content_to_str(content: Any) -> str:
     return content if isinstance(content, str) else str(content)
 
 
+_MEMORY_START_MARK = "[以下是你的长期记忆（按相关度排序）]"
+_MEMORY_END_MARK = "[/记忆]"
+_ATTACH_START_MARK = "[用户上传了附件"
+
+
+def strip_injected_context(text: str) -> str:
+    """去掉历史用户消息里注入的记忆/附件前缀，还原用户原始输入。
+
+    早期版本把“长期记忆 + 附件内容”拼进用户消息后直接落库，重新打开会话
+    会显示一堆前缀。此函数把这两类注入块删除；无注入时原样返回。
+    """
+    if _MEMORY_START_MARK not in text and _ATTACH_START_MARK not in text:
+        return text
+    # 长期记忆块（chat 时注入）：整块删除
+    start = text.find(_MEMORY_START_MARK)
+    end = text.find(_MEMORY_END_MARK)
+    if start != -1 and end != -1 and end > start:
+        text = text[:start] + text[end + len(_MEMORY_END_MARK):]
+    # 附件注入块（web_api 注入）：从标记到其后的 "\n]" 整块删除
+    start = text.find(_ATTACH_START_MARK)
+    if start != -1:
+        end = text.find("\n]", start)
+        if end != -1:
+            text = text[:start] + text[end + 2:]
+    return text.strip()
+
+
+def _strip_injected_in_messages(messages: list[Any]) -> list[Any]:
+    """遍历 pydantic-ai 序列化消息，清理 user-prompt 里的注入前缀。
+
+    无变化时原样返回原列表（便于调用方判断是否需要写回）。
+    """
+    changed = False
+    out: list[Any] = []
+    for m in messages:
+        if not isinstance(m, dict) or m.get("kind") != "request":
+            out.append(m)
+            continue
+        parts = m.get("parts")
+        if not isinstance(parts, list):
+            out.append(m)
+            continue
+        new_parts: list[Any] = []
+        for p in parts:
+            if (
+                isinstance(p, dict)
+                and p.get("kind") in ("user-prompt", "retry-prompt")
+                and isinstance(p.get("content"), str)
+            ):
+                stripped = strip_injected_context(p["content"])
+                if stripped != p["content"]:
+                    changed = True
+                    p = {**p, "content": stripped}
+            new_parts.append(p)
+        out.append({**m, "parts": new_parts})
+    return out if changed else messages
+
+
 def _make_title(messages: list[Any]) -> str | None:
     """用第一条用户消息生成会话标题；找不到返回 None"""
     if not _has_pydantic_ai:
@@ -159,6 +217,13 @@ class MySQLSessionStore:
         self._ensure_database()
         self._ensure_tables()
         self._maybe_migrate_from_json()
+        # 一次性修复：早期版本把记忆/附件注入前缀存进了用户消息
+        cleaned = self._normalize_injected_prefixes()
+        if cleaned:
+            print(
+                f"[MySQL 存储] 已清理 {cleaned} 个会话中的记忆/附件注入前缀",
+                flush=True,
+            )
 
     # ---------- 连接 ----------
     def _connect(self, with_db: bool = True):
@@ -258,6 +323,28 @@ class MySQLSessionStore:
             flush=True,
         )
 
+    def _normalize_injected_prefixes(self) -> int:
+        """清理历史会话里用户消息中的记忆/附件注入前缀（幂等，旧数据修复）"""
+        rows = self._fetch("SELECT session_id, messages FROM sessions")
+        cleaned = 0
+        for sid, raw in rows:
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(data, list):
+                continue
+            new_data = _strip_injected_in_messages(data)
+            if new_data is not data:
+                self._execute(
+                    "UPDATE sessions SET messages = %s WHERE session_id = %s",
+                    (json.dumps(new_data, ensure_ascii=False), sid),
+                )
+                cleaned += 1
+        return cleaned
+
     # ---------- 会话生命周期 ----------
     @staticmethod
     def _row_to_dict(row: tuple[Any, ...]) -> dict[str, object]:
@@ -304,6 +391,10 @@ class MySQLSessionStore:
             "DELETE FROM sessions WHERE session_id = %s", (session_id,)
         ) > 0
 
+    def delete_empty_sessions(self) -> int:
+        """删除所有空会话（message_count = 0），返回删除条数"""
+        return self._execute("DELETE FROM sessions WHERE message_count = 0")
+
     def list_sessions(
         self, keyword: str = "", limit: int | None = None
     ) -> list[dict[str, object]]:
@@ -318,12 +409,14 @@ class MySQLSessionStore:
             "FROM sessions"
         )
         args: list[object] = []
+        # 仅保留有内容的会话（message_count > 0），空会话不进入历史
+        sql += " WHERE message_count > 0"
         if kw:
             escaped = (
                 kw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             )
             like = "%" + escaped + "%"
-            sql += " WHERE title LIKE %s ESCAPE '\\\\' OR messages LIKE %s ESCAPE '\\\\'"
+            sql += " AND (title LIKE %s ESCAPE '\\\\' OR messages LIKE %s ESCAPE '\\\\')"
             args.extend([like, like])
         sql += " ORDER BY updated_at DESC"
         if limit is not None:
@@ -348,9 +441,7 @@ class MySQLSessionStore:
         rows = self._fetch(
             "SELECT title FROM sessions WHERE session_id = %s", (session_id,)
         )
-        if not rows:
-            return
-        title = rows[0][0] or ""
+        title = rows[0][0] or "" if rows else ""
         if not title:
             new_title: str | None = None
             if title_hint:
@@ -362,17 +453,20 @@ class MySQLSessionStore:
             if not new_title:
                 new_title = _make_title(messages)
             title = new_title or ""
-        self._execute(
-            "UPDATE sessions SET title = %s, message_count = %s, updated_at = %s, "
-            "messages = %s WHERE session_id = %s",
-            (
-                title,
-                len(messages),
-                time.time(),
-                json.dumps(_dump_messages(messages), ensure_ascii=False),
-                session_id,
-            ),
-        )
+        payload = json.dumps(_dump_messages(messages), ensure_ascii=False)
+        if rows:
+            self._execute(
+                "UPDATE sessions SET title = %s, message_count = %s, updated_at = %s, "
+                "messages = %s WHERE session_id = %s",
+                (title, len(messages), time.time(), payload, session_id),
+            )
+        else:
+            # 会话行不存在（可能被空会话清理删除）：首次有内容时落库
+            self._execute(
+                "INSERT INTO sessions (session_id, title, message_count, created_at, "
+                "updated_at, messages) VALUES (%s, %s, %s, %s, %s, %s)",
+                (session_id, title, len(messages), time.time(), time.time(), payload),
+            )
 
     def load_messages(self, session_id: str) -> list[object] | None:
         """加载会话消息（反序列化为 pydantic-ai 消息）；不存在/为空返回 None"""
