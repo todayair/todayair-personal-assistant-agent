@@ -5,9 +5,6 @@ imap_tools>=1.7.0
 pydantic-ai-harness>=0.14.0
 python-dotenv>=1.0
 
-# Gradio Web 前端
-gradio>=5.0.0
-
 # Web API 后端（web_api.py，供 React/Next.js 前端调用）
 fastapi>=0.115.0
 uvicorn>=0.30.0
@@ -18,3 +15,7 @@ sentence-transformers>=3.0.0
 
 # 个人数据（待办/笔记/提醒 + 历史会话）MySQL 存储（必需）
 pymysql>=1.1.0
+
+# GAIA 基准评测（可选：仅运行 gaia_eval/ 时需要）
+datasets>=5.0.0
+huggingface_hub>=1.0.0

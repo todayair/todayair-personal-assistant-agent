@@ -548,15 +548,6 @@ def _capture_config(agent_ctx) -> dict[str, object]:
     return config
 
 
-# ======================================================================
-# 统计对比工具
-# ======================================================================
-
-def print_gaia_history():
-    """查看之前保存的 GAIA 评测历史（TODO）"""
-    print("GAIA 历史记录功能即将推出")
-
-
 def save_gaia_report(report: GaiaReport, filepath: str | None = None):
     """保存 GAIA 报告到 JSON 文件（results/ 子文件夹）"""
     if filepath is None:

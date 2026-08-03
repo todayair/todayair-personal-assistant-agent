@@ -6,7 +6,9 @@
 
 设计特性：
 - 价值分层：只存高价值信息（偏好/个人信息/任务），过滤临时问答
+- 语义去重：新记忆与已有记忆高度相似时更新旧条目，避免重复堆积
 - 相似度阈值：低于阈值的记忆不注入
+- 混合检索：向量检索（ChromaDB）+ BM25 关键词检索 + RRF 融合
 - 时间戳：每段记忆记录时间，支持过期感知
 - 冲突处理：prompt 标注"以本次对话为准"
 - 隐私保护：手机号/密码/银行卡等敏感信息自动跳过
@@ -15,6 +17,7 @@
 from __future__ import annotations
 
 import os
+import math
 import re
 import time
 import uuid
@@ -30,6 +33,10 @@ EMBED_MODEL = os.getenv("EMBED_MODEL", "intfloat/multilingual-e5-small")
 EMBED_DEVICE = os.getenv("EMBED_DEVICE", "cpu")
 # 相似度阈值：低于此值的记忆不注入（余弦距离转相似度后比较）
 MEMORY_MIN_SIMILARITY = float(os.getenv("MEMORY_MIN_SIMILARITY", "0.4"))
+# 语义去重阈值：新增记忆与已有记忆相似度 ≥ 该值时，更新旧记忆而非新增重复
+MEMORY_DEDUP_SIMILARITY = float(os.getenv("MEMORY_DEDUP_SIMILARITY", "0.85"))
+# 混合检索开关：向量 + BM25 + RRF 融合（关闭时退回纯向量检索）
+MEMORY_HYBRID = os.getenv("MEMORY_HYBRID", "true").lower() == "true"
 
 
 def _get_chromadb() -> tuple[Any, Any]:
@@ -144,16 +151,75 @@ def _is_worth_storing(question: str, answer: str) -> bool:
     return len(a) > 30
 
 
+# ── BM25 关键词索引（零依赖，混合检索用） ──────────────────────────
+
+_BM25_K1 = 1.5
+_BM25_B = 0.75
+_RRF_K = 60.0
+
+
+def _tokenize(text: str) -> list[str]:
+    """轻量中英混合分词：拉丁单词（小写）+ 中文双字切分，无需词典"""
+    tokens: list[str] = []
+    for m in re.finditer(r"[A-Za-z0-9]+", text):
+        tokens.append(m.group(0).lower())
+    cjk = re.sub(r"[^\u4e00-\u9fff]", "", text)
+    if len(cjk) == 1:
+        tokens.append(cjk)
+    elif len(cjk) >= 2:
+        tokens.extend(cjk[i:i + 2] for i in range(len(cjk) - 1))
+    return tokens
+
+
+class _BM25Index:
+    """经典 BM25（Okapi），配合中英混合分词使用"""
+
+    def __init__(self, docs: list[str]) -> None:
+        self._doc_count = len(docs)
+        self._avgdl = 0.0
+        self._doc_tokens: list[list[str]] = []
+        self._df: dict[str, int] = {}
+        for doc in docs:
+            tokens = _tokenize(doc)
+            self._doc_tokens.append(tokens)
+            self._avgdl += len(tokens)
+            for t in set(tokens):
+                self._df[t] = self._df.get(t, 0) + 1
+        self._avgdl = self._avgdl / self._doc_count if self._doc_count else 0.0
+
+    def score(self, query: str) -> dict[int, float]:
+        """返回 {文档下标: bm25 分数}，仅包含有命中的文档"""
+        if self._doc_count == 0:
+            return {}
+        scores: dict[int, float] = {}
+        for t in set(_tokenize(query)):
+            df = self._df.get(t, 0)
+            if df == 0:
+                continue
+            idf = math.log(1 + (self._doc_count - df + 0.5) / (df + 0.5))
+            for i, tokens in enumerate(self._doc_tokens):
+                if t not in tokens:
+                    continue
+                tf = tokens.count(t)
+                dl = len(tokens)
+                avg = self._avgdl if self._avgdl > 0 else 1.0
+                denom = tf + _BM25_K1 * (1 - _BM25_B + _BM25_B * (dl / avg))
+                scores[i] = scores.get(i, 0.0) + idf * (tf * (_BM25_K1 + 1)) / denom
+        return scores
+
+
 # ── 数据模型 ──────────────────────────────────────────────
 
 
 @dataclass
 class MemoryResult:
     """单条检索结果"""
+    id: str = ""
     question: str = ""
     answer: str = ""
     distance: float = 0.0
     timestamp: float = 0.0
+    score: float = 0.0  # 混合检索相关度（RRF，越大越相关；0 表示未参与混合）
 
 
 # ── 主类 ──────────────────────────────────────────────
@@ -167,6 +233,8 @@ class AgentMemory:
         self._collection = None
         self._client = None
         self._init_error: str | None = None
+        # BM25 关键词索引缓存（记忆增删后失效重建）
+        self._bm25_cache: tuple[_BM25Index, dict[str, dict[str, Any]], list[str]] | None = None
 
         if not self._enabled:
             return
@@ -191,7 +259,7 @@ class AgentMemory:
         return self._init_error
 
     def add(self, question: str, answer: str) -> bool:
-        """存储一问一答到向量库（自动过滤低价值和敏感信息）
+        """存储一问一答到向量库（自动过滤、语义去重）
 
         Returns:
             True 表示已存储，False 表示被过滤跳过
@@ -207,6 +275,33 @@ class AgentMemory:
         if not _is_worth_storing(question, answer):
             return False
 
+        # 语义去重：与已有记忆高度相似时更新旧条目，避免重复堆积
+        try:
+            dup = self._collection.query(
+                query_texts=[f"query: {question}"],
+                n_results=5,
+            )
+            dup_ids = dup.get("ids", [[]])[0]
+            dup_dists = dup.get("distances", [[]])[0]
+            best_id: str | None = None
+            best_sim = 0.0
+            for i in range(len(dup_ids)):
+                sim = 1 - dup_dists[i]
+                if sim > best_sim:
+                    best_sim = sim
+                    best_id = dup_ids[i]
+            if best_id is not None and best_sim >= MEMORY_DEDUP_SIMILARITY:
+                # 内容/时间更新到最新，保持记忆新鲜且不产生重复条目
+                self._collection.update(
+                    ids=[best_id],
+                    documents=[f"passage: {answer}"],
+                    metadatas=[{"question": question, "timestamp": time.time()}],
+                )
+                self._bm25_cache = None  # 语料已变，失效关键词索引
+                return True
+        except Exception:  # noqa: BLE001  # 去重失败不阻塞正常写入
+            pass
+
         doc_id = str(uuid.uuid4())
         # e5 系列要求 passage: 前缀
         self._collection.add(
@@ -217,45 +312,115 @@ class AgentMemory:
             }],
             ids=[doc_id],
         )
+        self._bm25_cache = None  # 语料已变，失效关键词索引
         return True
 
     def search(self, query: str, k: int | None = None) -> list[MemoryResult]:
-        """语义检索最相似的记忆（自动过滤低分结果）"""
+        """混合检索最相似的记忆（向量 + BM25 + RRF 融合，自动过滤低分结果）"""
         if not self._enabled or not self._collection:
             return []
+        top_k = k or MEMORY_TOP_K
+        try:
+            return self._hybrid_search(query, top_k)
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _hybrid_search(self, query: str, top_k: int) -> list[MemoryResult]:
+        """向量候选（阈值过滤）与 BM25 候选（关键词命中）做 RRF 融合"""
+        # 1) 向量检索候选
+        vec_by_id: dict[str, MemoryResult] = {}
         try:
             # e5 系列要求 query: 前缀
             results = self._collection.query(
                 query_texts=[f"query: {query}"],
-                n_results=(k or MEMORY_TOP_K) * 2,  # 多取一些做过滤
+                n_results=top_k * 2,  # 多取一些做过滤
             )
-        except Exception:
-            return []
+            ids = results.get("ids", [[]])[0]
+            documents = results.get("documents", [[]])[0]
+            metadatas = results.get("metadatas", [[]])[0]
+            distances = results.get("distances", [[]])[0]
+            for i in range(len(ids)):
+                dist = distances[i] if distances and i < len(distances) else 0.0
+                # 相似度阈值过滤
+                if (1 - dist) < MEMORY_MIN_SIMILARITY:
+                    continue
+                meta = metadatas[i] if metadatas and i < len(metadatas) else {}
+                vec_by_id[ids[i]] = MemoryResult(
+                    id=ids[i],
+                    question=meta.get("question", ""),
+                    answer=documents[i] if documents and i < len(documents) else "",
+                    distance=dist,
+                    timestamp=meta.get("timestamp", 0.0),
+                )
+        except Exception:  # noqa: BLE001
+            pass
 
-        memories: list[MemoryResult] = []
-        ids = results.get("ids", [[]])[0]
-        documents = results.get("documents", [[]])[0]
-        metadatas = results.get("metadatas", [[]])[0]
-        distances = results.get("distances", [[]])[0]
+        if not MEMORY_HYBRID:
+            vec_list = sorted(vec_by_id.values(), key=lambda m: m.distance)
+            return vec_list[:top_k]
 
-        for i in range(len(ids)):
-            dist = distances[i] if distances and i < len(distances) else 0.0
-            similarity = 1 - dist
-            # 相似度阈值过滤
-            if similarity < MEMORY_MIN_SIMILARITY:
+        # 2) BM25 关键词候选
+        bm_results: list[tuple[str, MemoryResult]] = []
+        try:
+            index, meta_by_id, ids = self._ensure_bm25()
+            ranked = sorted(index.score(query).items(), key=lambda x: -x[1])[: top_k * 2]
+            for doc_idx, _s in ranked:
+                mid = ids[doc_idx]
+                meta = meta_by_id[mid]
+                bm_results.append((
+                    mid,
+                    MemoryResult(
+                        id=mid,
+                        question=meta["question"],
+                        answer=f"passage: {meta['answer']}",
+                        timestamp=meta["timestamp"],
+                    ),
+                ))
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 3) RRF 融合（倒数排名融合）
+        rrf: dict[str, float] = {}
+        for rank, m in enumerate(vec_by_id.values()):
+            rrf[m.id] = rrf.get(m.id, 0.0) + 1.0 / (_RRF_K + rank + 1)
+        for rank, (mid, _m) in enumerate(bm_results):
+            rrf[mid] = rrf.get(mid, 0.0) + 1.0 / (_RRF_K + rank + 1)
+
+        bm_by_id = dict(bm_results)
+        merged: list[MemoryResult] = []
+        for mid in sorted(rrf, key=lambda x: -rrf[x]):
+            base = vec_by_id.get(mid) or bm_by_id.get(mid)
+            if base is None:
                 continue
+            base.score = rrf[mid]
+            merged.append(base)
+        return merged[:top_k]
 
-            meta = metadatas[i] if metadatas and i < len(metadatas) else {}
-            memories.append(MemoryResult(
-                question=meta.get("question", ""),
-                answer=documents[i] if documents and i < len(documents) else "",
-                distance=dist,
-                timestamp=meta.get("timestamp", 0.0),
-            ))
-
-        # 按相似度排序，取 top-k
-        memories.sort(key=lambda m: m.distance)
-        return memories[: (k or MEMORY_TOP_K)]
+    def _ensure_bm25(self) -> tuple[_BM25Index, dict[str, dict[str, Any]], list[str]]:
+        """惰性构建 BM25 索引（记忆增删后由缓存失效机制重建）"""
+        if self._bm25_cache is not None:
+            return self._bm25_cache
+        data = self._collection.get(include=["documents", "metadatas"])
+        ids = data.get("ids", [])
+        documents = data.get("documents", [])
+        metadatas = data.get("metadatas", [])
+        docs: list[str] = []
+        meta_by_id: dict[str, dict[str, Any]] = {}
+        for i in range(len(ids)):
+            mid = ids[i]
+            answer = documents[i] if i < len(documents) and isinstance(documents[i], str) else ""
+            if answer.startswith("passage: "):
+                answer = answer[len("passage: "):]
+            meta = (metadatas[i] if i < len(metadatas) else {}) or {}
+            question = meta.get("question", "")
+            meta_by_id[mid] = {
+                "question": question,
+                "answer": answer,
+                "timestamp": meta.get("timestamp", 0.0),
+            }
+            docs.append(f"{question} {answer}")
+        self._bm25_cache = (_BM25Index(docs), meta_by_id, ids)
+        return self._bm25_cache
 
     @staticmethod
     def _format_time(ts: float) -> str:
@@ -284,8 +449,13 @@ class AgentMemory:
             "\n[以下是你的长期记忆（按相关度排序）]",
             "注意：如果以下记忆与本次对话矛盾，请以本次对话为准。",
         ]
+        max_score = max((m.score for m in memories), default=0.0)
         for i, m in enumerate(memories, 1):
-            sim = 1 - m.distance
+            if m.score > 0 and max_score > 0:
+                # 混合检索：按 RRF 分数归一化展示相对相关度
+                sim = min(0.99, max(0.40, m.score / max_score))
+            else:
+                sim = 1 - m.distance
             when = self._format_time(m.timestamp)
             display_answer = m.answer
             # 去掉 e5 的 passage: 前缀（如存储时已加）
@@ -309,6 +479,7 @@ class AgentMemory:
             embedding_function=emb_fn,
             metadata={"hnsw:space": "cosine"},
         )
+        self._bm25_cache = None  # 语料已清空，失效关键词索引
         return count
 
     @property

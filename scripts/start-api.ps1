@@ -52,10 +52,14 @@ $proc = Start-Process -FilePath $python -ArgumentList "web_api.py" `
 $proc.Id | Set-Content -Path $pidFile -Encoding ascii
 Write-Host "Web API 已启动 (PID $($proc.Id)) -> http://127.0.0.1:8000"
 
-# 4) 等待并验证端口（模型加载较慢，放宽到 15 秒）
-Start-Sleep -Seconds 15
-$port = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
-if ($port) { Write-Host "OK Web API 就绪" -ForegroundColor Green }
+# 4) 等待并验证端口（记忆模型加载较慢，轮询最多 40 秒，每 2 秒探测一次）
+$ready = $false
+for ($i = 0; $i -lt 20; $i++) {
+    Start-Sleep -Seconds 2
+    $port = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
+    if ($port) { $ready = $true; break }
+}
+if ($ready) { Write-Host "OK Web API 就绪 (PID $($port.OwningProcess))" -ForegroundColor Green }
 else {
     Write-Host "[警告] 8000 端口未就绪，启动日志末尾:" -ForegroundColor Yellow
     Get-Content $errFile -Encoding UTF8 -Tail 20 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }

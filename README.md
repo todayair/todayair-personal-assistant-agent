@@ -7,10 +7,11 @@
 - **多能力 Agent**：联网搜索（WebSearch）、文件读写（FileSystem）、执行系统命令（Shell）
 - **MCP 外部工具**：通过 `mcp_config.json` 挂载 GitHub 搜索等外部工具集
 - **国内邮箱（可选）**：QQ / 163 / 126 / Outlook 收发与管理（IMAP/SMTP + 授权码，国内直连，可搜索 / 阅读 / 发送 / 回复 / 移动 / 删除）
-- **长期记忆系统**：ChromaDB 向量数据库 + 语义检索，跨对话记住用户偏好与信息
-- **待办 / 笔记 / 提醒**：LLM 可直接用自然语言操作，数据统一存储到 MySQL（首次启动自动建库建表，初始化失败即报错终止）
-- **后台提醒**：提醒到点自动在终端弹出通知，无需打断对话
+- **长期记忆系统**：ChromaDB 向量库 + BM25 混合检索（RRF 融合）、语义去重、隐私 / 价值过滤，跨对话记住用户偏好与信息
+- **待办 / 笔记 / 提醒**：LLM 可直接用自然语言操作，支持**重复提醒**（每天 / 每周 / 工作日 / 每月）与**定时任务**，数据统一存储到 MySQL（首次启动自动建库建表，初始化失败即报错终止）
+- **后台提醒**：最小堆调度 + 原子触发（CLI 与 Web 双进程同时跑也不会重复通知），到点自动在终端 / Web 弹窗提醒
 - **历史会话**：每轮对话自动保存，支持按关键词查找历史记录，并可从任一会话恢复上下文继续对话（统一存 MySQL `agent_history` 库）
+- **Web 控制台**：Next.js 前端 + FastAPI 后端，对话（SSE **真流式**输出）、待办 / 笔记 / 提醒 / 日历 / 邮箱管理、附件上传、全屏提醒确认
 - **上下文自动压缩**：TieredCompaction 分层策略（清旧工具结果 → LLM 摘要），长对话不爆上下文
 - **Prompt Caching**：DeepSeek 前缀缓存自动生效，节省 token
 - **隐私保护**：手机号 / 密码 / 银行卡 / 身份证等敏感信息自动跳过，不写入记忆
@@ -27,6 +28,9 @@
 | fastmcp ≥ 3.4 | 进程内 FastMCP 服务（国内邮箱） |
 | imap_tools ≥ 1.7 | 国内邮箱 IMAP 收信（QQ / 163 / 126 / Outlook） |
 | PyMySQL | MySQL 存储驱动（个人数据 + 历史会话，唯一存储后端） |
+| FastAPI / uvicorn | Web API 后端（REST + SSE 流式对话） |
+| Next.js | Web 控制台前端（App Router + Tailwind） |
+| datasets / huggingface_hub | GAIA 基准评测（可选） |
 
 ## 快速开始
 
@@ -55,6 +59,15 @@ python agent.py
 
 首次启动会自动下载嵌入模型（`intfloat/multilingual-e5-small`，约 235MB），请耐心等待。
 
+### 4. 启动 Web 控制台（可选）
+
+```powershell
+scripts/start-all.ps1    # 一键启动 Web API（8000）+ 前端（3000）
+```
+
+或分别启动：`scripts/start-api.ps1`、`scripts/start-web.ps1`。浏览器打开 `http://localhost:3000` 即可使用
+对话、待办、笔记、提醒、日历、邮箱等完整功能；CLI 与 Web 共享同一套 MySQL 数据。
+
 ## 环境变量
 
 | 变量 | 必填 | 默认值 | 说明 |
@@ -77,14 +90,18 @@ python agent.py
 | `MEMORY_ENABLED` | 否 | `true` | 是否启用外部记忆 |
 | `MEMORY_TOP_K` | 否 | `3` | 每次对话注入的记忆条数 |
 | `MEMORY_MIN_SIMILARITY` | 否 | `0.4` | 记忆注入相似度阈值，低于则丢弃 |
+| `MEMORY_DEDUP_SIMILARITY` | 否 | `0.85` | 语义去重阈值：新记忆与已有记忆相似度 ≥ 该值时合并更新 |
+| `MEMORY_HYBRID` | 否 | `true` | 混合检索开关（向量 + BM25 + RRF；`false` 退回纯向量） |
 | `MEMORY_DIR` | 否 | `.agent_memory` | 向量库存储目录 |
 | `MEMORY_COLLECTION` | 否 | `agent_memory` | 向量库 collection 名 |
-| `MYSQL_ENABLED` | ✅ | `true` | 启用 MySQL 存储（必填） |
 | `MYSQL_HOST` | ✅ | `127.0.0.1` | MySQL 地址（必填） |
 | `MYSQL_PORT` | 否 | `3306` | MySQL 端口 |
 | `MYSQL_USER` | 否 | `root` | MySQL 用户 |
 | `MYSQL_PASSWORD` | ✅ | - | MySQL 密码（必填） |
 | `MYSQL_DATABASE` | 否 | - | 显式指定库名；未设置时个人数据用 `agent_personal` 库、历史会话用 `agent_history` 库 |
+| `CHAT_TIMEOUT` | 否 | `900` | Web 单次对话处理超时（秒） |
+| `STACK_DUMP_INTERVAL` | 否 | `120` | 后端卡死诊断：定时转储主线程栈的间隔秒数（`0` 关闭） |
+| `HF_TOKEN` | 否 | - | HuggingFace Token（仅运行 GAIA 评测时需要） |
 
 > 说明：`.env` 中所有变量均可用 `${VAR}` 占位符在 `mcp_config.json` 中引用。
 
@@ -124,13 +141,26 @@ python agent.py
 | 具体日期 | `2026-07-31 15:00` |
 | 裸时间 | `15:00`（已过则自动顺延到明天） |
 
-提醒到点后由后台任务自动在终端打印通知，无需手动查看。
+**重复提醒**（自然语言指定规则）：
+
+| 规则 | 示例 |
+|------|------|
+| 每天 | `每天9点` `每日 8:30` |
+| 每周 | `每周一14:00` `每周一到周三 9:00`（时间段） |
+| 工作日 | `工作日9:30` |
+| 每月 | `每月15号9点` `每月1号到15号 8:00`（时间段） |
+| 每小时 | `每小时` |
+
+**定时任务**：给提醒附加 `task`（如「每天早上 9 点播报今日待办」），到点后自动触发 Agent 执行该任务并把结果写入历史，
+Web 端可在提醒页管理。提醒到点后由后台任务自动在终端打印通知（Web 端弹全屏确认），无需手动查看。
 
 ## 记忆系统
 
-- 基于 ChromaDB 向量库，语义检索相似记忆注入对话上下文
+- 基于 ChromaDB 向量库，**混合检索**（向量语义 + BM25 关键词 + RRF 排名融合）把相似记忆注入对话上下文，版本号 / 编号 / URL 等字面信息也能精确命中
 - **价值分层**：只存偏好 / 个人信息 / 任务等高价值内容，寒暄、天气、短回答自动跳过
+- **语义去重**：新记忆与已有记忆相似度 ≥ `MEMORY_DEDUP_SIMILARITY`（默认 0.85）时合并更新，不重复堆积
 - **相似度过滤**：低于 `MEMORY_MIN_SIMILARITY` 的记忆不注入
+- **时间标注**：每条记忆带时间戳，注入时显示「今天 / 昨天 / N 天前」，供模型判断新旧
 - **冲突处理**：注入模板标注"与本次对话矛盾时以本次为准"
 - **隐私保护**：手机号 / 密码 / 银行卡 / 身份证正则匹配，命中即跳过
 
@@ -204,20 +234,28 @@ Web 界面由两部分组成：Python 后端 `web_api.py`（FastAPI）与 Next.j
 | `scripts/start-all.ps1` | 一并启动后端 + 前端 |
 | `scripts/stop-all.ps1` | 停止以上脚本启动的服务（按 PID 记录） |
 
+前端功能：对话（SSE 真流式打字机效果、会话切换与历史恢复）、待办 / 笔记 / 提醒 / 日历管理、
+邮箱配置与收发、状态页、附件上传、提醒到点全屏确认。
+
 **日志统一写入 `logs/` 目录**（已 gitignore，不提交）：
 
 | 文件 | 来源 |
 |------|------|
 | `logs/web-api.log` | Web API（自动轮转：单文件 5MB，保留 3 份历史） |
+| `logs/web-api-console.log` / `web-api-console.err.log` | 后端启动期输出（报错排查优先看这里） |
 | `logs/next-dev.log` | Next.js 前端开发服务器 |
+| `logs/*.pid` | 后台服务进程 PID 记录（脚本据此停止服务） |
 | `logs/archive/` | 历史旧日志归档，确认无用后可删除 |
 
 手动运行也一样：`python web_api.py` 会自动把日志写入 `logs/web-api.log`；
-前端 `pnpm dev` 直接跑时输出在终端，用 `scripts/start-web.ps1` 启动则写入 `logs/next-dev.log`。
+前端 `npm run dev` 直接跑时输出在终端，用 `scripts/start-web.ps1` 启动则写入 `logs/next-dev.log`。
 
 ## GAIA 基准评测
 
 内置 [GAIA](https://huggingface.co/datasets/gaia-benchmark/GAIA) 基准评测脚本，评估 Agent 综合能力：
+
+前置条件：注册 [HuggingFace](https://huggingface.co/join) 并接受 GAIA 条款，然后设置 `HF_TOKEN` 环境变量
+（或 `huggingface-cli login`）；带附件的题目会自动下载附件，需要网络。
 
 ```bash
 # 完整评测
@@ -236,32 +274,51 @@ python -m gaia_eval.run --gaia --gaia-no-attach
 python -m gaia_eval.run --gaia --dry-run
 ```
 
-评测结果自动保存为报告文件，支持通过 `--gaia-levels` / `--gaia-max` / `--gaia-no-attach` 组合筛选题目。
+支持通过 `--gaia-levels` / `--gaia-max` / `--gaia-no-attach` 组合筛选题目，单题超时可配
+`--gaia-timeout`。评测结果自动保存为 JSON 报告到 `gaia_eval/results/`；评测结束后自动清理
+下载的附件与临时文件（工作目录 `scratch/gaia_work/`、附件缓存 `.attachments/` 等），报告保留。
 
 ## 项目结构
 
 ```
 .
-├── agent.py              # 主程序：对话循环、工具注册、后台提醒、CLI
+├── agent.py              # 兼容门面 + CLI 入口（对外导出 agent/chat/chat_stream/personal/wake_event 等）
+├── agent_core.py         # Agent 核心：配置、MCP 工具集、agent 实例、LLM 工具注册、展示辅助
+├── chat_logic.py         # 对话逻辑：chat() / chat_stream()（真流式）+ 全局运行锁
+├── cli.py                # 命令行交互界面（/history /load /memory /todos 等 + 后台提醒调度）
+├── web_api.py            # Web API 装配入口（FastAPI 应用、生命周期、uvicorn 启动）
+├── web_state.py          # Web 共享状态（store / memory / 日志 / 会话缓存 / 常量）
+├── routers/              # 按业务域拆分的路由模块
+│   ├── chat.py           # 对话 SSE 流式（/api/chat）
+│   ├── sessions.py       # 会话 CRUD（/api/sessions）
+│   ├── todos.py          # 待办（/api/todos）
+│   ├── notes.py          # 笔记（/api/notes）
+│   ├── reminders.py      # 提醒 + 触发事件轮询（/api/reminders）
+│   ├── mail.py           # 邮箱（/api/mail）
+│   ├── history.py        # 历史会话（/api/history）
+│   ├── status.py         # 状态页（/api/status）
+│   ├── uploads.py        # 附件上传（/api/upload）
+│   └── common.py         # 共享辅助（消息/会话/数据行转换、SSE 编码）
+├── memory.py             # 外部记忆系统（ChromaDB 向量 + BM25 混合检索、语义去重、隐私/价值过滤）
+├── personal.py           # 待办 / 笔记 / 提醒 纯函数（parse_time / format_time / 重复规则）
+├── personal_mysql.py     # 个人数据 MySQL 数据层（自动建库建表 + 存量迁移 + 最小堆提醒调度）
+├── history.py            # 历史会话存储（MySQL，/history /load 支持）
+├── storage.py            # 存储工厂：create_personal_manager / create_session_store
 ├── email_tools.py        # 国内邮箱工具集（FastMCP 进程内服务，IMAP/SMTP + 授权码）
-├── personal.py           # 待办 / 笔记 / 提醒 纯函数与迁移读取（parse_time / format_time 等）
-├── personal_mysql.py     # 待办 / 笔记 / 提醒 数据层（唯一后端：MySQL，自动建库建表 + 存量迁移）
-├── storage.py            # 存储工厂：create_personal_manager / create_session_store（仅 MySQL，失败报错）
-├── memory.py             # 外部记忆系统（ChromaDB 向量检索）
-├── history.py            # 历史会话存储（唯一后端：MySQL，自动建库建表 + 存量迁移，/history /load 支持）
-├── web_api.py            # Web API 后端（FastAPI，SSE 对话 / 待办 / 笔记 / 提醒 / 历史 / 状态）
-├── scripts/              # 启动 / 停止脚本（start-api / start-web / start-all / stop-all）
-├── logs/                 # 运行日志（web-api.log、next-dev.log、archive/ 历史归档）
-├── personal-assistant-agent-web-console/  # Next.js Web 控制台前端（独立工程）
 ├── gaia_eval/            # GAIA 基准评测
-│   ├── run.py            # 评测 CLI 入口
+│   ├── run.py            # 评测 CLI 入口（评测结束自动清理临时文件）
 │   └── gaia_eval.py      # 数据集加载与评测逻辑
-├── mcp_config.json       # MCP 外部工具配置（GitHub；国内邮箱为代码直连，见上文）
+├── scripts/              # 启动 / 停止脚本（start-api / start-web / start-all / stop-all）
+├── personal-assistant-agent-web-console/  # Next.js Web 控制台前端（独立工程）
+├── mcp_config.json       # MCP 外部工具配置（GitHub；国内邮箱为代码直连）
 ├── requirements.txt      # Python 依赖
-├── .env                  # 环境变量（已 gitignore，勿提交）
-└── .agent_personal/      # 旧版待办/笔记/提醒数据（仅首次启动迁移到 MySQL 时读取，不再写入）
-└── .agent_history/       # 旧版历史会话数据（仅首次启动迁移到 MySQL 时读取，不再写入）
+├── .env / .env.example   # 环境变量（.env 已 gitignore，勿提交）
+├── logs/                 # 运行日志（web-api.log、next-dev.log）
+└── uploads/              # 前端上传的附件
 ```
+
+运行时数据目录（已 gitignore）：`.agent_memory/`（向量记忆）、`.agent_personal/` 与
+`.agent_history/`（旧版数据，仅首次启动迁移到 MySQL 时读取）、`logs/`（日志）、`uploads/`（附件）。
 
 ## 隐私与安全
 

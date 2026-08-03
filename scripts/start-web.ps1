@@ -54,11 +54,15 @@ $proc = Start-Process -FilePath $pm -ArgumentList $pmArgs `
 $proc.Id | Set-Content -Path $pidFile -Encoding ascii
 Write-Host "前端已启动 (PID $($proc.Id), $([IO.Path]::GetFileName($pm))) -> http://localhost:3000"
 
-# 4) 等待并验证端口
-Start-Sleep -Seconds 10
-$alive = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
-$port = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
-if ($alive -and $port) { Write-Host "OK 前端就绪 -> http://localhost:3000" -ForegroundColor Green }
+# 4) 等待并验证端口（冷启动编译较慢，轮询最多 40 秒，每 2 秒探测一次）
+$ready = $false
+for ($i = 0; $i -lt 20; $i++) {
+    Start-Sleep -Seconds 2
+    $alive = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
+    $port = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
+    if ($alive -and $port) { $ready = $true; break }
+}
+if ($ready) { Write-Host "OK 前端就绪 -> http://localhost:3000 (PID $($port.OwningProcess))" -ForegroundColor Green }
 else {
     Write-Host "[警告] 3000 端口未就绪，启动日志末尾:" -ForegroundColor Yellow
     Get-Content $errFile -Encoding UTF8 -Tail 20 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }

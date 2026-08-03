@@ -6,11 +6,9 @@ import {
   Plus,
   Send,
   ChevronDown,
-  Wrench,
   Loader2,
   MessageSquare,
   Sparkles,
-  CheckCircle2,
   CheckSquare2,
   ArrowRight,
   Paperclip,
@@ -31,38 +29,7 @@ function formatTime(iso: string) {
   return new Date(iso).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
-function ToolCallBadge({ toolName }: { toolName: string }) {
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs text-amber-700 border border-amber-200">
-      <Wrench className="h-3 w-3" />
-      {toolName}
-    </span>
-  )
-}
-
 function MessageBubble({ msg }: { msg: ChatMessage & { streaming?: boolean; toolDone?: boolean } }) {
-  if (msg.role === 'tool') {
-    const done = msg.toolDone
-    return (
-      <div className="flex justify-center py-1 fade-in-up">
-        <div
-          className={cn(
-            'flex items-center gap-2 rounded-full px-3 py-1 text-xs transition-colors',
-            done ? 'bg-muted/40 text-muted-foreground/70' : 'bg-muted/60 text-muted-foreground',
-          )}
-        >
-          {done ? (
-            <CheckCircle2 className="h-3 w-3 text-emerald-500" />
-          ) : (
-            <Loader2 className="h-3 w-3 animate-spin" />
-          )}
-          <span>{done ? '工具完成' : '调用工具'}</span>
-          <ToolCallBadge toolName={msg.toolName ?? msg.content} />
-        </div>
-      </div>
-    )
-  }
-
   const isUser = msg.role === 'user'
 
   return (
@@ -182,7 +149,6 @@ export default function ChatPage() {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pickerRef = useRef<HTMLDivElement>(null)
-  const toolSeqRef = useRef(0)
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [uploading, setUploading] = useState(false)
 
@@ -205,9 +171,7 @@ export default function ChatPage() {
               if (full) {
                 setCurrentSession(full)
                 setMessages(
-                  (full.messages ?? []).map((m) =>
-                    m.role === 'tool' ? { ...m, toolDone: true } : m,
-                  ),
+                  (full.messages ?? []).filter((m) => m.role !== 'tool'),
                 )
               }
             })
@@ -268,9 +232,7 @@ export default function ChatPage() {
     if (full) {
       setCurrentSession(full)
       setMessages(
-        (full.messages ?? []).map((m) =>
-          m.role === 'tool' ? { ...m, toolDone: true } : m,
-        ),
+        (full.messages ?? []).filter((m) => m.role !== 'tool'),
       )
     }
     setShowSessionPicker(false)
@@ -346,48 +308,13 @@ export default function ChatPage() {
             prev.map((m) => (m.id === streamingId ? { ...m, content: builtContent } : m)),
           )
         },
-        (toolName) => {
-          toolSeqRef.current += 1
-          const toolMsg: ChatMessage & { toolDone: boolean } = {
-            id: `t-${toolSeqRef.current}`,
-            role: 'tool',
-            content: toolName,
-            toolName,
-            timestamp: new Date().toISOString(),
-            toolDone: false,
-          }
-          setMessages((prev) => {
-            const idx = prev.findIndex((m) => m.id === streamingId)
-            const next = [...prev]
-            next.splice(idx, 0, toolMsg)
-            return next
-          })
-        },
-        (toolName) => {
-          // 工具完成：将最近的同名未完成工具消息标记为完成
-          setMessages((prev) => {
-            const next = [...prev]
-            for (let i = next.length - 1; i >= 0; i--) {
-              const m = next[i]
-              if (m.role === 'tool' && m.toolName === toolName && !m.toolDone) {
-                next[i] = { ...m, toolDone: true }
-                break
-              }
-            }
-            return next
-          })
-        },
+        () => {},
+        () => {},
         attachments,
       )
     } catch (e) {
       setChatError(e instanceof Error ? e.message : String(e))
     } finally {
-      // 兜底：回复结束后，无论是否收到 toolResult，所有工具消息都标记为完成
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.role === 'tool' && !m.toolDone ? { ...m, toolDone: true } : m,
-        ),
-      )
       setMessages((prev) =>
         prev.map((m) => (m.id === streamingId ? { ...m, streaming: false } : m)),
       )
@@ -485,7 +412,7 @@ export default function ChatPage() {
           <EmptyState onSendHint={(hint) => handleSend(hint)} />
         ) : (
           <div className="space-y-5">
-            {messages.map((msg) => (
+            {messages.filter((m) => m.role !== 'tool').map((msg) => (
               <MessageBubble key={msg.id} msg={msg} />
             ))}
             <div ref={messagesEndRef} />
